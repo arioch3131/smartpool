@@ -10,19 +10,11 @@ examples and then launching a web server.
 """
 
 import argparse
+import importlib
 
-import uvicorn
-
+from examples import example_07_web_integration as web_integration
 from examples.example_01_basic_bytesio import basic_usage_example
 from examples.example_05_advanced_features import example_presets_configuration
-
-# pylint: disable=W0611
-from examples.example_07_web_integration import (
-    FASTAPI_AVAILABLE,
-    FLASK_AVAILABLE,
-    create_flask_app,
-    init_flask_pools,
-)
 
 
 def run_initial_examples():
@@ -63,17 +55,27 @@ def main():
     run_initial_examples()
 
     if args.framework == "flask":
-        if not FLASK_AVAILABLE:
+        if not web_integration.FLASK_AVAILABLE:
             print("Flask is not installed. Please install it with 'pip install Flask'.")
             return
+        if not hasattr(web_integration, "init_flask_pools") or not hasattr(
+            web_integration, "create_flask_app"
+        ):
+            print("Flask helpers are unavailable in the integration module.")
+            return
         print("Starting Flask server...")
-        init_flask_pools()
-        app = create_flask_app()
+        web_integration.init_flask_pools()
+        app = web_integration.create_flask_app()
         app.run(host=args.host, port=args.port, debug=False)
 
     elif args.framework == "fastapi":
-        if not FASTAPI_AVAILABLE:
+        if not web_integration.FASTAPI_AVAILABLE:
             print("FastAPI is not installed. Please install it with 'pip install fastapi uvicorn'.")
+            return
+        try:
+            uvicorn = importlib.import_module("uvicorn")
+        except ImportError:
+            print("Uvicorn is not installed. Please install it with 'pip install uvicorn'.")
             return
         print("Starting FastAPI server with Uvicorn...")
         # The app object is a callable that uvicorn can run

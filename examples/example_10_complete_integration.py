@@ -14,6 +14,7 @@ using all aspects of the pool system:
 - Flexible configuration
 """
 
+import argparse
 import asyncio
 import logging
 import shutil
@@ -618,7 +619,18 @@ if FASTAPI_AVAILABLE and PIL_AVAILABLE:
 
 # === Usage Examples ===
 # pylint: disable=R0914,R0912,R0915
-async def demo_complete_application():  # noqa: PLR0912,PLR0915
+def create_fastapi_app():
+    """Factory used by Uvicorn to create the FastAPI app."""
+    if not (FASTAPI_AVAILABLE and PIL_AVAILABLE):
+        raise RuntimeError("FastAPI and Pillow are required to create the web app.")
+    return ImageProcessingApp(AppConfig()).app
+
+
+if FASTAPI_AVAILABLE and PIL_AVAILABLE:
+    app = create_fastapi_app()
+
+
+async def demo_complete_application(quick: bool = False):  # noqa: PLR0912,PLR0915
     """Complete application demonstration."""
 
     if not (FASTAPI_AVAILABLE and PIL_AVAILABLE):
@@ -653,12 +665,14 @@ async def demo_complete_application():  # noqa: PLR0912,PLR0915
         # Use the image pool to create a test image
         image_pool = pool_manager.get_pool("images")
 
-        with image_pool.acquire_context(400, 300, "RGB") as test_image:
+        width = 160 if quick else 400
+        height = 120 if quick else 300
+        with image_pool.acquire_context(width, height, "RGB") as test_image:
             # Fill with a color gradient
-            for x in range(400):
-                for y in range(300):
-                    r = int(255 * x / 400)
-                    g = int(255 * y / 300)
+            for x in range(width):
+                for y in range(height):
+                    r = int(255 * x / width)
+                    g = int(255 * y / height)
                     b = 128
                     test_image.putpixel((x, y), (r, g, b))
 
@@ -715,7 +729,8 @@ async def demo_complete_application():  # noqa: PLR0912,PLR0915
         print("\n5. Load test with multiple jobs...")
 
         jobs = []
-        for i in range(10):
+        job_count = 3 if quick else 10
+        for i in range(job_count):
             ops = ["blur"] if i % 2 == 0 else ["enhance_brightness", "sharpen"]
             job = image_service.create_job(str(test_path), ops)
             jobs.append(job)
@@ -781,7 +796,10 @@ def demo_api_usage():
     print("  POST /pools/{pool_name}/optimize - Manual optimization")
     print()
     print("To start the server:")
-    print("  uvicorn main:app --host 0.0.0.0 --port 8000 --reload")
+    print(
+        "  uvicorn examples.example_10_complete_integration:create_fastapi_app "
+        "--factory --host 0.0.0.0 --port 8000 --reload"
+    )
     print()
     print("Example usage with curl:")
     print("  # Upload an image")
@@ -801,13 +819,21 @@ def demo_api_usage():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Complete SmartPool integration demo")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run a fast demonstration with a smaller image and fewer jobs.",
+    )
+    args = parser.parse_args()
+
     print("=== Complete Integration in a Real Project ===")
     print("This demonstration shows a complete image processing application")
     print("using all aspects of the memory pool system.")
     print()
 
     # Run demonstrations
-    asyncio.run(demo_complete_application())
+    asyncio.run(demo_complete_application(quick=args.quick))
     demo_api_usage()
 
     print("\n=== Demonstrated Features ===")

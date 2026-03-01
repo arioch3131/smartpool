@@ -10,6 +10,7 @@ This file demonstrates how to:
 - Patterns for integration with existing frameworks
 """
 
+import argparse
 import functools
 import threading
 import time
@@ -546,7 +547,7 @@ class ObservablePool:
 # === Tests and demonstrations ===
 
 
-def demo_pool_hierarchy():
+def demo_pool_hierarchy(quick: bool = False):
     """Demonstration of the pool hierarchy."""
 
     print("=== Pool Hierarchy Demonstration ===\n")
@@ -579,7 +580,8 @@ def demo_pool_hierarchy():
         # Fill the primary pool
         acquired_objects = []
         try:
-            for _ in range(25):  # More than the primary pool's limit
+            saturation_attempts = 8 if quick else 25
+            for _ in range(saturation_attempts):  # More than the primary pool's limit
                 obj_id, key, obj = primary_pool.acquire(1024)
                 acquired_objects.append((obj_id, key, obj))
         except Exception as exc:  # pylint: disable=W0718
@@ -623,7 +625,7 @@ def demo_decorators():
             buffer.write(data.encode())
             buffer.write(b" - processed with decorator")
             buffer.seek(0)
-            return buffer.read().decode()
+            return buffer.read().decode().rstrip("\x00")
 
         # Test the decorator
         # pylint: disable=E1120
@@ -643,7 +645,7 @@ def demo_decorators():
                 return len(buffer.getvalue())
             if analysis_type == "content":
                 buffer.seek(0)
-                return buffer.read().decode()
+                return buffer.read().decode().rstrip("\x00")
             return "Unknown analysis type"
 
         # Test the generic decorator
@@ -722,7 +724,7 @@ def demo_builder_pattern():
         dev_pool.shutdown()
 
 
-def demo_observability():
+def demo_observability(quick: bool = False):
     """Demonstration of observability."""
 
     print("\n=== Observability Demonstration ===\n")
@@ -744,7 +746,8 @@ def demo_observability():
         print("--- Test with observability ---")
 
         # Simulate different types of operations
-        for i in range(20):
+        iterations = 8 if quick else 20
+        for i in range(iterations):
             size = [512, 1024, 2048][i % 3]
 
             with observable_pool.acquire_context(size) as buffer:
@@ -797,10 +800,18 @@ def demo_advanced_context_manager():
 
 
 if __name__ == "__main__":
-    demo_pool_hierarchy()
+    parser = argparse.ArgumentParser(description="Advanced memory pool usage patterns")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run a shorter demo with fewer iterations.",
+    )
+    args = parser.parse_args()
+
+    demo_pool_hierarchy(quick=args.quick)
     demo_decorators()
     demo_builder_pattern()
-    demo_observability()
+    demo_observability(quick=args.quick)
     demo_advanced_context_manager()
 
     print("\n=== Summary of demonstrated patterns ===")

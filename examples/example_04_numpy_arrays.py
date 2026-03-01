@@ -11,6 +11,7 @@ This file demonstrates how to:
 - Monitor memory usage for large arrays.
 """
 
+import argparse
 import time
 
 import numpy as np
@@ -92,7 +93,7 @@ def basic_numpy_example():
         pool.shutdown()
 
 
-def machine_learning_example():  # pylint: disable=R0914
+def machine_learning_example(quick: bool = False):  # pylint: disable=R0914
     """Example of use for machine learning."""
     print("\n=== NumPy Pool for Machine Learning ===\n")
 
@@ -113,8 +114,12 @@ def machine_learning_example():  # pylint: disable=R0914
         print("--- ML Training Simulation ---")
 
         # Simulated dataset parameters
-        n_samples, n_features, n_classes = 100000, 1000, 100
-        batch_size, n_epochs = 64, 10
+        if quick:
+            n_samples, n_features, n_classes = 4000, 256, 20
+            batch_size, n_epochs = 32, 3
+        else:
+            n_samples, n_features, n_classes = 100000, 1000, 100
+            batch_size, n_epochs = 64, 10
 
         print(f"Dataset: {n_samples} samples, {n_features} features")
         print(f"Batch size: {batch_size}, Epochs: {n_epochs}")
@@ -176,7 +181,7 @@ def machine_learning_example():  # pylint: disable=R0914
         pool.shutdown()
 
 
-def scientific_computing_example():
+def scientific_computing_example(quick: bool = False):
     """Example for intensive scientific calculations."""
     print("\n=== Intensive Scientific Computing ===\n")
 
@@ -186,7 +191,10 @@ def scientific_computing_example():
     try:
         print("--- FFT Calculation Simulation ---")
 
-        signal_length, n_signals = 16384, 10000
+        if quick:
+            signal_length, n_signals = 2048, 200
+        else:
+            signal_length, n_signals = 16384, 10000
         print(f"Processing {n_signals} signals of length {signal_length}")
 
         start_time = time.time()
@@ -218,7 +226,7 @@ def scientific_computing_example():
         pool.shutdown()
 
 
-def memory_management_example():
+def memory_management_example(quick: bool = False):
     """Example of memory management for large arrays."""
     print("\n=== Memory Management for Large Arrays ===\n")
 
@@ -234,7 +242,10 @@ def memory_management_example():
 
     try:
         print("--- Testing with different array sizes ---")
-        shapes = [(1000,), (1000, 1000), (100, 100, 100), (2000, 2000)]
+        if quick:
+            shapes = [(1000,), (500, 500), (64, 64, 32)]
+        else:
+            shapes = [(1000,), (1000, 1000), (100, 100, 100), (2000, 2000)]
 
         for i, shape in enumerate(shapes):
             with pool.acquire_context(shape, "float64") as arr:
@@ -300,8 +311,16 @@ def multiple_dtypes_example():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NumPy array pooling examples")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run a fast demonstration with reduced dataset sizes and iterations.",
+    )
+    args = parser.parse_args()
+
     basic_numpy_example()
-    machine_learning_example()
-    scientific_computing_example()
-    memory_management_example()
+    machine_learning_example(quick=args.quick)
+    scientific_computing_example(quick=args.quick)
+    memory_management_example(quick=args.quick)
     multiple_dtypes_example()

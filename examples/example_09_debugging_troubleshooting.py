@@ -10,6 +10,7 @@ This file demonstrates how to:
 - Monitor pool health in production
 """
 
+import argparse
 import gc
 import threading
 import time
@@ -18,7 +19,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-import psutil
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 from examples.factories import BytesIOFactory, PILImageFactory
 from smartpool.config import MemoryConfig, MemoryPreset
@@ -86,6 +90,17 @@ class PoolDiagnostic:
 
     def analyze_memory_usage(self) -> Dict[str, Any]:
         """Analyzes memory usage."""
+
+        if psutil is None:
+            return {
+                "process_memory_mb": None,
+                "process_memory_percent": None,
+                "pool_memory_mb": None,
+                "pool_memory_ratio": None,
+                "memory_by_key": {},
+                "gc_counts": gc.get_count(),
+                "warning": "psutil not installed; process-level memory metrics unavailable.",
+            }
 
         process = psutil.Process()
 
@@ -161,11 +176,9 @@ class PoolDiagnostic:
 
         # Check memory usage
         memory_analysis = self.analyze_memory_usage()
-        if memory_analysis["pool_memory_ratio"] > 0.5:
-            issues.append(
-                "Pool uses high percentage of process memory:"
-                f" {memory_analysis['pool_memory_ratio']:.1%}"
-            )
+        pool_memory_ratio = memory_analysis.get("pool_memory_ratio")
+        if isinstance(pool_memory_ratio, (int, float)) and pool_memory_ratio > 0.5:
+            issues.append(f"Pool uses high percentage of process memory: {pool_memory_ratio:.1%}")
 
         return issues
 
@@ -398,7 +411,7 @@ class RealTimeMonitor:
 # === Test Scenarios and Issue Reproduction ===
 
 
-def simulate_memory_leak():
+def simulate_memory_leak(quick: bool = False):
     """Simulates a memory leak to test detection."""
 
     print("=== Memory Leak Simulation ===\n")
@@ -413,7 +426,8 @@ def simulate_memory_leak():
     try:
         print("Phase 1: Normal usage")
 
-        for i in range(10):
+        baseline_iterations = 5 if quick else 10
+        for i in range(baseline_iterations):
             with pool.acquire_context(1024) as buffer:
                 buffer.write(f"Normal data {i}".encode())
 
@@ -423,7 +437,8 @@ def simulate_memory_leak():
         print("\nPhase 2: Leak simulation (unreleased objects)")
 
         # Acquire objects without releasing them
-        for i in range(20):
+        leak_count = 6 if quick else 20
+        for i in range(leak_count):
             obj_id, key, obj = pool.acquire(1024)
             leaked_objects.append((obj_id, key, obj))
             obj.write(f"Leaked data {i}".encode())
@@ -443,9 +458,15 @@ def simulate_memory_leak():
         # Analyze memory
         memory_analysis = diagnostic.analyze_memory_usage()
         print("\nMemory usage:")
-        print(f"  Process: {memory_analysis['process_memory_mb']:.1f} MB")
-        print(f"  Pool: {memory_analysis['pool_memory_mb']:.1f} MB")
-        print(f"  Ratio: {memory_analysis['pool_memory_ratio']:.1%}")
+        process_memory_mb = memory_analysis.get("process_memory_mb")
+        pool_memory_mb = memory_analysis.get("pool_memory_mb")
+        pool_memory_ratio = memory_analysis.get("pool_memory_ratio")
+        if isinstance(process_memory_mb, (int, float)):
+            print(f"  Process: {process_memory_mb:.1f} MB")
+            print(f"  Pool: {pool_memory_mb:.1f} MB")
+            print(f"  Ratio: {pool_memory_ratio:.1%}")
+        else:
+            print("  Process metrics unavailable (install psutil for full memory diagnostics)")
 
     finally:
         # Clean up the "leaked" objects
@@ -455,7 +476,7 @@ def simulate_memory_leak():
         pool.shutdown()
 
 
-def simulate_high_contention():
+def simulate_high_contention(quick: bool = False):
     """Simulates high contention to test detection."""
 
     print("\n=== High Contention Simulation ===\n")
@@ -483,10 +504,12 @@ def simulate_high_contention():
         print("Launching concurrent workers...")
 
         # Launch multiple workers in parallel to create contention
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        workers = 4 if quick else 10
+        operations = 8 if quick else 20
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = []
-            for worker_id in range(10):
-                future = executor.submit(worker_function, worker_id, 20)
+            for worker_id in range(workers):
+                future = executor.submit(worker_function, worker_id, operations)
                 futures.append(future)
 
             # Wait for completion
@@ -519,7 +542,7 @@ def simulate_high_contention():
         pool.shutdown()
 
 
-def simulate_performance_degradation():
+def simulate_performance_degradation(quick: bool = False):
     """Simulates performance degradation."""
 
     print("\n=== Performance Degradation Simulation ===\n")
@@ -537,7 +560,8 @@ def simulate_performance_degradation():
         print("Phase 1: Light load")
 
         start_time = time.time()
-        for i in range(10):
+        light_iterations = 5 if quick else 10
+        for _ in range(light_iterations):
             with pool.acquire_context(100, 100, "RGB"):
                 pass  # Just acquire and release
 
@@ -546,7 +570,8 @@ def simulate_performance_degradation():
         print("Phase 2: Heavy load (large images)")
 
         start_time = time.time()
-        for i in range(20):
+        heavy_iterations = 8 if quick else 20
+        for i in range(heavy_iterations):
             # Different large images to force misses
             size = 500 + (i % 5) * 100
             with pool.acquire_context(size, size, "RGB"):
@@ -637,7 +662,7 @@ def debug_stuck_objects():
         pool.shutdown()
 
 
-def comprehensive_debugging_session():
+def comprehensive_debugging_session(quick: bool = False):
     """Comprehensive debugging session."""
 
     print("\n=== Comprehensive Debugging Session ===\n")
@@ -656,7 +681,8 @@ def comprehensive_debugging_session():
         print(f"   Issues: {len(baseline_report.issues_found)}")
 
         print("\n2. Normal load")
-        for i in range(30):
+        normal_load_iterations = 10 if quick else 30
+        for i in range(normal_load_iterations):
             with pool.acquire_context(1024) as buffer:
                 buffer.write(f"Normal load {i}".encode())
 
@@ -664,13 +690,15 @@ def comprehensive_debugging_session():
 
         # Create contention
         def contention_worker():
-            for i in range(10):
+            contention_iterations = 4 if quick else 10
+            for i in range(contention_iterations):
                 with pool.acquire_context(2048) as buffer:
                     buffer.write(f"Contention data {i}".encode())
                     time.sleep(0.01)
 
         threads = []
-        for _ in range(5):
+        thread_count = 2 if quick else 5
+        for _ in range(thread_count):
             thread = threading.Thread(target=contention_worker)
             thread.start()
             threads.append(thread)
@@ -705,16 +733,29 @@ def comprehensive_debugging_session():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="SmartPool debugging and troubleshooting demos")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run a shorter diagnostic sequence with fewer operations.",
+    )
+    args = parser.parse_args()
+
+    if psutil is None:
+        print("Warning: psutil is not installed. Process memory diagnostics will be limited.")
+        print("Install with: pip install psutil")
+        print()
+
     print("=== Debugging and Troubleshooting Guide ===")
     print("This module demonstrates various tools and techniques for diagnosing")
     print("performance and memory issues in pools.")
     print()
 
-    simulate_memory_leak()
-    simulate_high_contention()
-    simulate_performance_degradation()
+    simulate_memory_leak(quick=args.quick)
+    simulate_high_contention(quick=args.quick)
+    simulate_performance_degradation(quick=args.quick)
     debug_stuck_objects()
-    comprehensive_debugging_session()
+    comprehensive_debugging_session(quick=args.quick)
 
     print("\n=== Available Debugging Tools ===")
     print("1. PoolDiagnostic - Comprehensive and automated diagnostics")

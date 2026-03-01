@@ -42,7 +42,10 @@ def basic_usage_example():
         # Acquire a 1KB buffer
         obj_id, key, buffer = pool.acquire(1024)  # Initial 1024 bytes
         print(f"Acquired: ID={obj_id}, Key={key}")
-        print(f"Buffer size: {len(buffer.getvalue())} bytes")
+        # Clear pre-allocation to keep output readable for the demo.
+        buffer.seek(0)
+        buffer.truncate(0)
+        print(f"Buffer logical size before write: {len(buffer.getvalue())} bytes")
 
         # Use the buffer
         buffer.write(b"Hello, World!")
@@ -58,6 +61,8 @@ def basic_usage_example():
         print("\n--- Usage with Context Manager ---")
 
         with pool.acquire_context(2048) as buffer:  # 2KB buffer
+            buffer.seek(0)
+            buffer.truncate(0)
             buffer.write(b"Context manager example")
             buffer.seek(0)
             print(f"Content: {buffer.read()}")

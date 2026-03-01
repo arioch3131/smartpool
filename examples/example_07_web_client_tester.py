@@ -120,7 +120,7 @@ def run_load_test(duration_seconds: int):
 if __name__ == "__main__":
     print(
         "Waiting for the server to start..."
-        " (make sure you run 'python examples/example_07_main_web_server.py')"
+        " (make sure you run 'python -m examples.example_07_main_web_server')"
     )
     time.sleep(3)
     run_load_test(20)

@@ -187,16 +187,16 @@ pip install -e ".[database]"    # For database examples
 
 ```bash
 # Run basic examples
-python examples/example_01_basic_bytesio.py
-python examples/example_04_numpy_arrays.py
-python examples/example_05_advanced_features.py
+python -m examples.example_01_basic_bytesio
+python -m examples.example_04_numpy_arrays
+python -m examples.example_05_advanced_features
 
 # Run specialized examples
-python examples/example_02_pil_images.py
-python examples/example_03_database_pool.py
-python examples/example_06_custom_factory.py
-python examples/example_07_main_web_server.py --framework fastapi
-python examples/example_10_complete_integration.py
+python -m examples.example_02_pil_images
+python -m examples.example_03_database_pool
+python -m examples.example_06_custom_factory
+python -m examples.example_07_main_web_server --framework fastapi
+python -m examples.example_10_complete_integration
 ```
 
 ### Example Categories
@@ -281,10 +281,10 @@ pip install "requests>=2.0.0"
 
 ### Getting Started Guide
 
-1. **Start with basics**: Run `examples/example_01_basic_bytesio.py` to understand core concepts
-2. **Explore specialized factories**: Try `examples/example_02_pil_images.py` or `examples/example_04_numpy_arrays.py`
-3. **Explore custom factories**: Use `examples/example_06_custom_factory.py` for extension patterns
-4. **Add diagnostics**: Run `examples/example_09_debugging_troubleshooting.py` for performance insights
+1. **Start with basics**: Run `python -m examples.example_01_basic_bytesio` to understand core concepts
+2. **Explore specialized factories**: Try `python -m examples.example_02_pil_images` or `python -m examples.example_04_numpy_arrays`
+3. **Explore custom factories**: Use `python -m examples.example_06_custom_factory` for extension patterns
+4. **Add diagnostics**: Run `python -m examples.example_09_debugging_troubleshooting` for performance insights
 5. **Try your use case**: Choose specialized examples matching your needs
 
 ### Example Features Demonstrated
@@ -308,8 +308,8 @@ Many examples include built-in performance testing and benchmarking capabilities
 
 ```bash
 # Most examples include timing and metrics
-python examples/example_04_numpy_arrays.py      # Shows ML performance gains
-python examples/example_07_web_client_tester.py # Web server throughput testing
+python -m examples.example_04_numpy_arrays      # Shows ML performance gains
+python -m examples.example_07_web_client_tester # Web server throughput testing
 ```
 
 ### Troubleshooting Examples

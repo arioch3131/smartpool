@@ -34,19 +34,13 @@ To run this example, you need to install the additional dependencies specified i
 
        pip install -e ".[examples]"
 
-2.  **Navigate to the Example Directory:**
-
-    .. code-block:: bash
-
-       cd examples
-
-3.  **Run the Example:**
+2.  **Run the Example:**
 
     The `example_10_complete_integration.py` file contains a `main` block that demonstrates both a direct application run (without the FastAPI server) and an API usage overview.
 
     .. code-block:: bash
 
-       python example_10_complete_integration.py
+       python -m examples.example_10_complete_integration
 
     This will execute the `demo_complete_application()` (which simulates the image processing workflow) and `demo_api_usage()` (which prints API endpoints and `curl` examples).
 
