@@ -1,0 +1,88 @@
+# pre-commit configuration for adaptive-memory-pool
+# Installs all code quality hooks
+
+repos:
+  # Basic file hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # isort - Import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        name: isort (python)
+        args: ["--profile", "black", "--line-length", "100"]
+
+  # Black - Code formatting
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        name: black
+        args: ["--line-length", "100"]
+        language_version: python3
+
+  # Flake8 - Linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.3.0
+    hooks:
+      - id: flake8
+        name: flake8
+        args: ["--max-line-length", "100", "--extend-ignore", "E203,W503"]
+#        additional_dependencies: [flake8-docstrings, flake8-bugbear]
+
+  # MyPy - Type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.1
+    hooks:
+      - id: mypy
+        name: mypy
+        args: ["--config-file", "pyproject.toml"]
+        pass_filenames: false
+        entry: mypy src/
+        additional_dependencies: [
+          # Main project dependencies
+          "Pillow>=9.0.0",
+          "PyQt6>=6.0.0",
+          "numpy>=1.20.0",
+          "SQLAlchemy>=1.4.0",
+          # Example dependencies
+          "uvicorn>=0.33.0",
+          "fastapi>=0.116.1",
+          "Flask>=3.0.0",
+          "psutil>=7.0.0",
+          "requests>=2.0.0",
+          # Specific types if necessary
+          "types-requests",
+        ]
+
+# Stage configuration
+default_stages: [pre-commit]
+fail_fast: false  # Continue even if a hook fails to see all problems
+
+# Global exclusions
+exclude: |
+  (?x)^(
+    docs/.*|
+    build/.*|
+    dist/.*|
+    \.eggs/.*|
+    .*\.egg-info/.*|
+    __pycache__/.*|
+    \.git/.*|
+    \.mypy_cache/.*|
+    \.pytest_cache/.*|
+    \.coverage.*
+  )$
