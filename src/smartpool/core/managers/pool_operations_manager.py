@@ -72,6 +72,11 @@ class PoolOperationsManager:
         """
         self.pool = pool
         self.logger = logging.getLogger(__name__)
+        # Cached optional callables to reduce attribute lookups in hot paths.
+        getter = getattr(pool, "get_total_pooled_objects", None)
+        self._get_total_pooled_objects = getter if callable(getter) else None
+        adjuster = getattr(pool, "_adjust_total_pooled_objects", None)
+        self._adjust_total_pooled_objects = adjuster if callable(adjuster) else None
 
         # OrderedDict to track the access order of keys for LRU eviction.
         # Keys are object categories, values are their last access timestamps.
@@ -133,14 +138,16 @@ class PoolOperationsManager:
 
             # Check if the object has expired based on its creation time and TTL.
             if self._is_expired(pooled_obj, current_time, config):
+                self._adjust_total_objects(-1)
                 self.pool.stats.increment("expired")
                 pooled_obj.state = ObjectState.EXPIRED
                 self._try_destroy_object(pooled_obj.obj)  # Destroy expired object
                 continue  # Try next object in queue
 
             # Validate the object using the factory's validation method.
-            validation_result = self._validate_pooled_object(pooled_obj, key, queue)
+            validation_result = self._validate_pooled_object(pooled_obj, key, queue, config)
             if validation_result.success:
+                self._adjust_total_objects(-1)
                 return PoolOperationResult(
                     success=True, object_found=pooled_obj, objects_processed=processed
                 )
@@ -169,7 +176,11 @@ class PoolOperationsManager:
         return current_time - pooled_obj.created_at > config.ttl_seconds
 
     def _create_fail_pool_operation_result(
-        self, pooled_obj: "PooledObject", key: str, queue: Deque["PooledObject"]
+        self,
+        pooled_obj: "PooledObject",
+        key: str,
+        queue: Deque["PooledObject"],
+        config: Optional["MemoryConfig"] = None,
     ) -> PoolOperationResult:
         """
         Internal method to generate a failed PoolOperationResult.
@@ -184,10 +195,9 @@ class PoolOperationsManager:
             A Failed PoolOperationResult.
         """
         # If validation fails too many times, mark as corrupted.
-        if (
-            pooled_obj.validation_failures
-            >= self.pool.get_config_for_key(key).max_validation_attempts
-        ):
+        effective_config = config if config is not None else self.pool.get_config_for_key(key)
+        if pooled_obj.validation_failures >= effective_config.max_validation_attempts:
+            self._adjust_total_objects(-1)
             self._mark_as_corrupted(key, pooled_obj)
             return PoolOperationResult(
                 success=False,
@@ -201,7 +211,11 @@ class PoolOperationsManager:
         )
 
     def _validate_pooled_object(
-        self, pooled_obj: "PooledObject", key: str, queue: Deque["PooledObject"]
+        self,
+        pooled_obj: "PooledObject",
+        key: str,
+        queue: Deque["PooledObject"],
+        config: Optional["MemoryConfig"] = None,
     ) -> PoolOperationResult:
         """
         Internal method to validate a `PooledObject` using the associated factory.
@@ -224,23 +238,29 @@ class PoolOperationsManager:
                 return PoolOperationResult(success=True)
             pooled_obj.validation_failures += 1
             self.pool.stats.increment("validation_failures")
-            return self._create_fail_pool_operation_result(pooled_obj, key, queue)
+            return self._create_fail_pool_operation_result(pooled_obj, key, queue, config)
 
         except (TypeError, AttributeError, ValueError, RuntimeError) as e:
             # Log and mark as corrupted if validation itself raises an exception.
+            effective_config = config if config is not None else self.pool.get_config_for_key(key)
             ex = SmartPoolExceptionFactory.create_factory_error(
                 error_type="validation",
                 factory_class=self.pool.factory.__class__.__name__,
                 method_name="validate",
                 cause=e,
                 validation_attempts=pooled_obj.validation_failures + 1,
-                max_attempts=self.pool.get_config_for_key(key).max_validation_attempts,
+                max_attempts=effective_config.max_validation_attempts,
             )
             self.pool._handle_exception(ex)  # pylint: disable=protected-access
             self._mark_as_corrupted(key, pooled_obj)
             return PoolOperationResult(success=False, error_message=f"Validation exception: {e}")
 
-    def _mark_as_corrupted(self, key: str, pooled_obj: "PooledObject") -> None:
+    def _mark_as_corrupted(
+        self,
+        key: str,
+        pooled_obj: "PooledObject",
+        config: Optional["MemoryConfig"] = None,
+    ) -> None:
         """
         Marks a `PooledObject` as corrupted, increments corruption statistics for its key,
         and destroys the underlying object. If the corruption threshold for a key is reached,
@@ -257,8 +277,8 @@ class PoolOperationsManager:
             self._corrupted_objects[key] = 0
         self._corrupted_objects[key] += 1
 
-        config = self.pool.get_config_for_key(key)
-        if self._corrupted_objects[key] >= config.max_corrupted_objects:
+        effective_config = config if config is not None else self.pool.get_config_for_key(key)
+        if self._corrupted_objects[key] >= effective_config.max_corrupted_objects:
             safe_log(
                 self.logger,
                 logging.ERROR,
@@ -284,16 +304,15 @@ class PoolOperationsManager:
         Returns:
             bool: True if the object can be added to the pool, False otherwise.
         """
-        total_objects = sum(len(queue) for queue in pool_data.values())
+        total_objects = self._get_total_objects(pool_data)
+        if total_objects < max_total_objects:
+            return True
 
-        if total_objects >= max_total_objects:
-            # If global limit reached, try to evict least recently used objects.
-            evicted = self.evict_least_recently_used(pool_data)
+        # If global limit reached, try to evict least recently used objects.
+        evicted = self.evict_least_recently_used(pool_data)
+        if evicted > 0:
             safe_log(self.logger, logging.INFO, f"LRU eviction: removed {evicted} objects")
-            total_objects = sum(
-                len(queue) for queue in pool_data.values()
-            )  # Recalculate after eviction
-        return total_objects < max_total_objects  # Check again if space was made
+        return self._get_total_objects(pool_data) < max_total_objects
 
     def evict_least_recently_used(self, pool_data: Dict[str, Deque["PooledObject"]]) -> int:
         """
@@ -309,7 +328,7 @@ class PoolOperationsManager:
         if not self._key_access_order:
             return 0
 
-        total_objects = sum(len(queue) for queue in pool_data.values())
+        total_objects = self._get_total_objects(pool_data)
         # Determine how many objects to evict (e.g., 25% of current total, minimum 1).
         to_evict = max(1, total_objects // 4)
         evicted = 0
@@ -328,6 +347,7 @@ class PoolOperationsManager:
                 for _ in range(min(evict_count, len(queue))):
                     if queue:  # Ensure queue is not empty before popping
                         pooled_obj = queue.popleft()  # Remove from the front (oldest)
+                        self._adjust_total_objects(-1)
                         self._try_destroy_object(pooled_obj.obj)
                         self.pool.stats.increment("evictions")
                         evicted += 1
@@ -344,6 +364,25 @@ class PoolOperationsManager:
                 del self._key_access_order[key]
 
         return evicted
+
+    def _get_total_objects(self, pool_data: Dict[str, Deque["PooledObject"]]) -> int:
+        """
+        Returns total pooled objects using the pool's incremental counter when available.
+
+        Falls back to a direct queue-length sum for mocked pools in unit tests.
+        """
+        getter = self._get_total_pooled_objects
+        if callable(getter):
+            total = getter()
+            if isinstance(total, int):
+                return total
+        return sum(len(queue) for queue in pool_data.values())
+
+    def _adjust_total_objects(self, delta: int) -> None:
+        """Adjust pooled-object counter when the pool exposes an internal adjuster."""
+        adjuster = self._adjust_total_pooled_objects
+        if adjuster is not None:
+            adjuster(delta)
 
     def cleanup_expired_objects(
         self, pool_data: Dict[str, Deque["PooledObject"]], current_time: float
@@ -364,6 +403,7 @@ class PoolOperationsManager:
 
         for key, queue in pool_data.items():
             config = self.pool.get_config_for_key(key)
+            queue_before = len(queue)
             new_queue: Deque[PooledObject] = deque()  # Build a new queue with non-expired objects
 
             for pooled_obj in queue:
@@ -377,6 +417,10 @@ class PoolOperationsManager:
                 pool_data[key] = new_queue
             else:  # If queue becomes empty, mark key for removal
                 keys_to_remove.append(key)
+
+            removed_in_key = queue_before - len(new_queue)
+            if removed_in_key > 0:
+                self._adjust_total_objects(-removed_in_key)
 
         # Clean up keys that now have empty queues.
         for key in keys_to_remove:
@@ -484,29 +528,37 @@ class PoolOperationsManager:
             bool: True if the object was successfully added to the pool, False if the pool
                   for that key was already full (in which case the object is destroyed).
         """
-        if key not in pool_data:
-            pool_data[key] = deque()
-        if len(pool_data[key]) < config.max_objects_per_key:
-            pooled_obj = PooledObject(
-                obj=obj,
-                created_at=time.time(),
-                last_accessed=time.time(),
-                state=ObjectState.VALID,
-                estimated_size=self.pool.factory.estimate_size(obj),
-            )
-            pool_data[key].append(pooled_obj)  # Add to the end of the queue
+        queue = pool_data.get(key)
+        if queue is None:
+            queue = deque()
+            pool_data[key] = queue
 
-            safe_log(self.logger, logging.DEBUG, f"Object returned to pool for key {key}")
-            return True
-        # Pool full for this key, destroy the object.
-        safe_log(
-            self.logger,
-            logging.INFO,
-            f"Pool for key {key} is full (max_objects_per_key={config.max_objects_per_key})"
-            ", destroying object.",
+        if len(queue) >= config.max_objects_per_key:
+            # Pool full for this key, destroy the object.
+            safe_log(
+                self.logger,
+                logging.INFO,
+                f"Pool for key {key} is full (max_objects_per_key={config.max_objects_per_key})"
+                ", destroying object.",
+            )
+            self._try_destroy_object(obj)
+            return False
+
+        created_at = time.time()
+        pooled_obj = PooledObject(
+            obj=obj,
+            created_at=created_at,
+            last_accessed=created_at,
+            state=ObjectState.VALID,
+            estimated_size=self.pool.factory.estimate_size(obj),
         )
-        self._try_destroy_object(obj)
-        return False
+        queue.append(pooled_obj)  # Add to the end of the queue
+        adjuster = self._adjust_total_pooled_objects
+        if adjuster is not None:
+            adjuster(1)
+
+        safe_log(self.logger, logging.DEBUG, f"Object returned to pool for key {key}")
+        return True
 
     def _try_destroy_object(self, obj: Any) -> None:
         """

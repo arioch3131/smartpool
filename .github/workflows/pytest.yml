@@ -2,7 +2,7 @@ name: Tests (PyTest)
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'tests/**'
@@ -10,13 +10,16 @@ on:
       - 'requirements*.txt'
       - '.github/workflows/pytest.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'tests/**'
       - 'pyproject.toml'
       - 'requirements*.txt'
       - '.github/workflows/pytest.yml'
+
+permissions:
+  contents: read
 
 jobs:
   test:

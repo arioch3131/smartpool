@@ -17,31 +17,15 @@ repos:
       - id: mixed-line-ending
         args: ['--fix=lf']
 
-  # isort - Import sorting
-  - repo: https://github.com/pycqa/isort
-    rev: 6.0.1
+  # Ruff - Linting, import sorting, and formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
     hooks:
-      - id: isort
-        name: isort (python)
-        args: ["--profile", "black", "--line-length", "100"]
-
-  # Black - Code formatting
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
-    hooks:
-      - id: black
-        name: black
-        args: ["--line-length", "100"]
-        language_version: python3
-
-  # Flake8 - Linting
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.3.0
-    hooks:
-      - id: flake8
-        name: flake8
-        args: ["--max-line-length", "100", "--extend-ignore", "E203,W503"]
-#        additional_dependencies: [flake8-docstrings, flake8-bugbear]
+      - id: ruff-check
+        name: ruff check
+        args: [--fix]
+      - id: ruff-format
+        name: ruff format
 
   # MyPy - Type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
@@ -68,8 +52,36 @@ repos:
           "types-requests",
         ]
 
+  # Pre-push quality gate
+  - repo: local
+    hooks:
+      - id: ruff-check-pre-push
+        name: ruff check (pre-push)
+        entry: ruff check .
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: ruff-format-check-pre-push
+        name: ruff format --check (pre-push)
+        entry: ruff format --check .
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mypy-pre-push
+        name: mypy (pre-push)
+        entry: mypy --config-file pyproject.toml src/
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-pre-push
+        name: pytest (pre-push)
+        entry: pytest
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
 # Stage configuration
-default_stages: [pre-commit]
+default_stages: [pre-commit, pre-push]
 fail_fast: false  # Continue even if a hook fails to see all problems
 
 # Global exclusions
