@@ -273,9 +273,7 @@ class PoolOperationsManager:
         pooled_obj.state = ObjectState.CORRUPTED
         self.pool.stats.increment("corrupted")
 
-        if key not in self._corrupted_objects:
-            self._corrupted_objects[key] = 0
-        self._corrupted_objects[key] += 1
+        self._corrupted_objects[key] = self._corrupted_objects.get(key, 0) + 1
 
         effective_config = config if config is not None else self.pool.get_config_for_key(key)
         if self._corrupted_objects[key] >= effective_config.max_corrupted_objects:
@@ -312,7 +310,7 @@ class PoolOperationsManager:
         evicted = self.evict_least_recently_used(pool_data)
         if evicted > 0:
             safe_log(self.logger, logging.INFO, f"LRU eviction: removed {evicted} objects")
-        return self._get_total_objects(pool_data) < max_total_objects
+        return (total_objects - evicted) < max_total_objects
 
     def evict_least_recently_used(self, pool_data: Dict[str, Deque["PooledObject"]]) -> int:
         """
@@ -404,21 +402,21 @@ class PoolOperationsManager:
         for key, queue in pool_data.items():
             config = self.pool.get_config_for_key(key)
             queue_before = len(queue)
-            new_queue: Deque[PooledObject] = deque()  # Build a new queue with non-expired objects
+            removed_in_key = 0
 
-            for pooled_obj in queue:
-                if not self._is_expired(pooled_obj, current_time, config):
-                    new_queue.append(pooled_obj)
-                else:
+            # In-place filtering to avoid allocating a new deque for every key.
+            for _ in range(queue_before):
+                pooled_obj = queue.popleft()
+                if self._is_expired(pooled_obj, current_time, config):
                     self._try_destroy_object(pooled_obj.obj)
                     expired_count += 1
+                    removed_in_key += 1
+                else:
+                    queue.append(pooled_obj)
 
-            if new_queue:  # Replace old queue with new one if not empty
-                pool_data[key] = new_queue
-            else:  # If queue becomes empty, mark key for removal
+            if not queue:  # If queue becomes empty, mark key for removal
                 keys_to_remove.append(key)
 
-            removed_in_key = queue_before - len(new_queue)
             if removed_in_key > 0:
                 self._adjust_total_objects(-removed_in_key)
 
@@ -512,6 +510,8 @@ class PoolOperationsManager:
         obj: Any,
         config: "MemoryConfig",
         pool_data: Dict[str, Deque["PooledObject"]],
+        *,
+        estimated_size: Optional[int] = None,
     ) -> bool:
         """
         Adds a `PooledObject` back to the pool for a specific key, provided there is space
@@ -528,35 +528,52 @@ class PoolOperationsManager:
             bool: True if the object was successfully added to the pool, False if the pool
                   for that key was already full (in which case the object is destroyed).
         """
+        created_ts = time.time()
+        size_bytes = (
+            estimated_size if estimated_size is not None else self.pool.factory.estimate_size(obj)
+        )
+        pooled_obj = PooledObject(
+            obj=obj,
+            created_at=created_ts,
+            last_accessed=created_ts,
+            state=ObjectState.VALID,
+            estimated_size=size_bytes,
+        )
+        return self.add_pooled_object(key, pooled_obj, config, pool_data)
+
+    def add_pooled_object(
+        self,
+        key: str,
+        pooled_obj: "PooledObject",
+        config: "MemoryConfig",
+        pool_data: Dict[str, Deque["PooledObject"]],
+    ) -> bool:
+        """
+        Adds a pre-built `PooledObject` to the pool for a key, respecting
+        `max_objects_per_key`.
+
+        This variant avoids repeated wrapping work inside lock-heavy paths.
+        """
         queue = pool_data.get(key)
         if queue is None:
             queue = deque()
             pool_data[key] = queue
 
         if len(queue) >= config.max_objects_per_key:
-            # Pool full for this key, destroy the object.
             safe_log(
                 self.logger,
                 logging.INFO,
-                f"Pool for key {key} is full (max_objects_per_key={config.max_objects_per_key})"
-                ", destroying object.",
+                (
+                    "Pool for key "
+                    f"{key} is full (max_objects_per_key={config.max_objects_per_key}), "
+                    "destroying object."
+                ),
             )
-            self._try_destroy_object(obj)
+            self._try_destroy_object(pooled_obj.obj)
             return False
 
-        created_at = time.time()
-        pooled_obj = PooledObject(
-            obj=obj,
-            created_at=created_at,
-            last_accessed=created_at,
-            state=ObjectState.VALID,
-            estimated_size=self.pool.factory.estimate_size(obj),
-        )
-        queue.append(pooled_obj)  # Add to the end of the queue
-        adjuster = self._adjust_total_pooled_objects
-        if adjuster is not None:
-            adjuster(1)
-
+        queue.append(pooled_obj)
+        self._adjust_total_objects(1)
         safe_log(self.logger, logging.DEBUG, f"Object returned to pool for key {key}")
         return True
 
@@ -642,7 +659,15 @@ class PoolOperationsManager:
         # Destroy all pooled objects.
         for queue in pool_data.values():
             for pooled_obj in queue:
-                self._try_destroy_object(pooled_obj.obj)
+                try:
+                    self._try_destroy_object(pooled_obj.obj)
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    # Shutdown should be best-effort: continue clearing even if one object fails.
+                    safe_log(
+                        self.logger,
+                        logging.WARNING,
+                        f"Failed to destroy object during pool clear: {exc}",
+                    )
                 destroyed_count += 1
 
         # Clear all internal tracking structures.

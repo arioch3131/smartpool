@@ -9,6 +9,22 @@ The format is inspired by Keep a Changelog, and this project follows Semantic Ve
 ### Added
 - Placeholder for upcoming changes.
 
+## [1.1.1] - 2026-04-06
+
+### Changed
+- Additional hot-path optimizations in `acquire()` / `release()` without public API changes.
+- Reduced lock contention by moving more preparation work outside critical sections.
+- Reduced overhead in high-frequency stats updates (batched counter increments).
+- Micro-optimizations in `PoolOperationsManager` for allocation/counter efficiency.
+
+### Fixed
+- Improved shutdown resilience when object destruction fails during pool clear.
+- Restored expected delegation/logging compatibility for existing tests and integrations.
+
+### Validation
+- Full quality gates pass: `ruff`, `ruff format --check`, `mypy`, `pytest` (`546 passed`).
+- Benchmarks rerun at multiple sizes (`10k`, `50k`, `100k`) with stable gains.
+
 ## [1.1.0] - 2026-04-06
 
 ### Changed
