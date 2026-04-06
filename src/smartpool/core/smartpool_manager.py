@@ -346,15 +346,20 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                 "acquire", shutdown_time=cast(Optional[float], shutdown_time)
             )
 
-        start_time = time.time()
-        lock_wait_start = start_time
-        if self.performance_metrics:
-            self.performance_metrics.mark_acquisition_start()
+        performance_metrics = self.performance_metrics
+        optimizer = self.optimizer
+        needs_post_tasks = bool(performance_metrics or self.enable_monitoring or optimizer)
+        start_perf = time.perf_counter() if needs_post_tasks else 0.0
+
+        if performance_metrics:
+            performance_metrics.mark_acquisition_start()
 
         try:
             with self.lock:
                 current_time = time.time()
-                lock_wait_time_ms = (current_time - lock_wait_start) * 1000
+                lock_wait_time_ms = (
+                    (time.perf_counter() - start_perf) * 1000 if performance_metrics else 0.0
+                )
                 # 1. Resolve key and config for the requested object type.
                 key = self._get_key_cache(*args, **kwargs)
                 config = self.get_config_for_key(key)
@@ -391,11 +396,17 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
 
                 # 6. Perform post-acquisition tasks: record metrics and trigger
                 # auto-tuning checks.
-                self._post_acquire_tasks(key, start_time, search_result.success, lock_wait_time_ms)
+                if needs_post_tasks:
+                    self._post_acquire_tasks(
+                        key,
+                        start_perf,
+                        search_result.success,
+                        lock_wait_time_ms,
+                    )
                 return obj_id, key, obj.obj
         finally:
-            if self.performance_metrics:
-                self.performance_metrics.mark_acquisition_end()
+            if performance_metrics:
+                performance_metrics.mark_acquisition_end()
 
     def _handle_pool_hit(
         self,
@@ -419,14 +430,15 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         obj.last_accessed = current_time if current_time is not None else time.time()
         obj.access_count += 1
 
-        self.stats.increment("hits")
-        self.stats.increment("reuses")
+        self.stats.increment_many({"hits": 1, "reuses": 1})
 
         if config.enable_logging:
             safe_log(
                 self.logger,
                 logging.DEBUG,
-                f"Pool hit for key {key}, access_count: {obj.access_count}",
+                "Pool hit for key %s, access_count: %s",
+                key,
+                obj.access_count,
             )
 
     def _handle_pool_miss(
@@ -462,8 +474,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                 estimated_size=self.factory.estimate_size(raw_obj),
             )
 
-            self.stats.increment("creates")
-            self.stats.increment("misses")
+            self.stats.increment_many({"creates": 1, "misses": 1})
 
             if config.enable_logging:
                 safe_log(self.logger, logging.DEBUG, f"Pool miss for key {key}, created new object")
@@ -480,7 +491,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             ) from exc
 
     def _post_acquire_tasks(
-        self, key: str, start_time: float, hit: bool, lock_wait_time_ms: float = 0.0
+        self, key: str, start_perf: float, hit: bool, lock_wait_time_ms: float = 0.0
     ) -> None:
         """
         Performs various tasks immediately after an object has been acquired
@@ -490,13 +501,13 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
 
         Args:
             key (str): The key of the acquired object.
-            start_time (float): The timestamp when the acquisition process started.
+            start_perf (float): Monotonic timestamp when acquisition started.
             hit (bool): True if the object was a pool hit, False if it was a miss
                 (newly created).
         """
         # Performance metrics recording.
         if self.performance_metrics:
-            total_time = (time.time() - start_time) * 1000
+            total_time = (time.perf_counter() - start_perf) * 1000
             self.performance_metrics.record_acquisition(
                 key=key,
                 acquisition_time_ms=total_time,
@@ -535,17 +546,33 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             # If validation or reset fails, the object is destroyed by operations_manager.
             return
 
+        # Prepare pooled metadata outside lock to minimize lock hold time.
+        now = time.time()
+        pooled_obj = PooledObject(
+            obj=obj,
+            created_at=now,
+            last_accessed=now,
+            state=ObjectState.VALID,
+            estimated_size=self.factory.estimate_size(obj),
+        )
+
         with self.lock:
             # 3. Determine if the object can be added back to the pool
             # (considering global capacity).
             if self.operations_manager.should_add_to_pool(self.pool, self.max_total_objects):
                 # 4. Add the object to the pool.
-                self.operations_manager.add_to_pool(key, obj, config, self.pool)
+                self.operations_manager.add_to_pool(
+                    key,
+                    pooled_obj.obj,
+                    config,
+                    self.pool,
+                    estimated_size=pooled_obj.estimated_size,
+                )
             else:
                 # If the pool is full, destroy the object to release resources.
                 safe_log(self.logger, logging.INFO, f"Pool full for key {key}, destroying object.")
                 try:
-                    self.factory.destroy(obj)
+                    self.factory.destroy(pooled_obj.obj)
                 except (ConnectionError, TimeoutError) as exc:
                     # Network connection cleanup errors
                     safe_log(

@@ -113,6 +113,17 @@ class ThreadSafeStats:
         with self._lock:
             self._counters[key] += value
 
+    def increment_many(self, updates: Dict[str, int]) -> None:
+        """
+        Increments multiple counters atomically under a single lock acquisition.
+
+        Args:
+            updates (Dict[str, int]): Mapping of counter names to increment values.
+        """
+        with self._lock:
+            for key, value in updates.items():
+                self._counters[key] += value
+
     def set_gauge(self, key: str, value: float) -> None:
         """
         Sets the value of a specified gauge metric. This operation is atomic.
