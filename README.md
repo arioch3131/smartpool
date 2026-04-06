@@ -332,6 +332,12 @@ Install development dependencies:
 pip install -e ".[dev]"
 ```
 
+Install git hooks (including the blocking `pre-push` quality gate):
+
+```bash
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
 ### Running Tests
 
 ```bash

@@ -6,15 +6,22 @@ on:
     paths:
       - 'src/**'
       - 'examples/**'
+      - 'scripts/**'
       - 'pyproject.toml'
+      - '.pre-commit-config.yaml'
       - '.github/workflows/code_quality.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'src/**'
       - 'examples/**'
+      - 'scripts/**'
       - 'pyproject.toml'
+      - '.pre-commit-config.yaml'
       - '.github/workflows/code_quality.yml'
+
+permissions:
+  contents: read
 
 jobs:
   quality:

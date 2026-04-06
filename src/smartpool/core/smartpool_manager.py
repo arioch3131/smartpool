@@ -159,6 +159,8 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         # Stores pooled objects, organized by their unique key. Each key maps to
         # a deque of PooledObject.
         self.pool: Dict[str, Deque[PooledObject]] = {}
+        # Internal pooled-object counter to avoid repeated full scans of `self.pool`.
+        self._total_pooled_objects = 0
         # Stores key-specific configurations that override the default_config.
         self.key_configs: Dict[str, MemoryConfig] = {}
         # A reentrant lock to ensure thread-safe access to shared pool data structures.
@@ -338,25 +340,24 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                 - key (str): The key associated with the acquired object.
                 - obj (T): The acquired object instance.
         """
-        start_time = time.time()
-
         if self._is_shut_down:
             shutdown_time = self.stats.get_all_metrics().get("gauges", {}).get("shutdown_timestamp")
             raise PoolAlreadyShutdownError(
                 "acquire", shutdown_time=cast(Optional[float], shutdown_time)
             )
 
-        lock_wait_start = time.time()
+        start_time = time.time()
+        lock_wait_start = start_time
         if self.performance_metrics:
             self.performance_metrics.mark_acquisition_start()
 
         try:
             with self.lock:
-                lock_wait_time_ms = (time.time() - lock_wait_start) * 1000
+                current_time = time.time()
+                lock_wait_time_ms = (current_time - lock_wait_start) * 1000
                 # 1. Resolve key and config for the requested object type.
                 key = self._get_key_cache(*args, **kwargs)
                 config = self.get_config_for_key(key)
-                current_time = time.time()
 
                 # 2. Update LRU access order for the key.
                 self.operations_manager.update_key_access(key, current_time)
@@ -376,7 +377,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                                 "reason": "search_result.object_found was None despite success"
                             },
                         )
-                    self._handle_pool_hit(obj, key, config)
+                    self._handle_pool_hit(obj, key, config, current_time)
                 else:
                     obj = self._handle_pool_miss(key, config, *args, **kwargs)
 
@@ -396,7 +397,13 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             if self.performance_metrics:
                 self.performance_metrics.mark_acquisition_end()
 
-    def _handle_pool_hit(self, obj: PooledObject, key: str, config: MemoryConfig) -> None:
+    def _handle_pool_hit(
+        self,
+        obj: PooledObject,
+        key: str,
+        config: MemoryConfig,
+        current_time: Optional[float] = None,
+    ) -> None:
         """
         Internal method to handle the logic when an object is successfully
         retrieved from the pool (a "hit"). Updates the object's state, access
@@ -409,7 +416,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             config (MemoryConfig): The configuration applicable to this object's key.
         """
         obj.state = ObjectState.IN_USE
-        obj.last_accessed = time.time()
+        obj.last_accessed = current_time if current_time is not None else time.time()
         obj.access_count += 1
 
         self.stats.increment("hits")
@@ -445,10 +452,11 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         """
         try:
             raw_obj = self.factory.create(*args, **kwargs)
+            created_at = time.time()
             obj = PooledObject(
                 obj=raw_obj,
-                created_at=time.time(),
-                last_accessed=time.time(),
+                created_at=created_at,
+                last_accessed=created_at,
                 access_count=1,
                 state=ObjectState.IN_USE,
                 estimated_size=self.factory.estimate_size(raw_obj),
@@ -516,17 +524,18 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             obj (T): The object instance to release.
         """
 
-        with self.lock:
-            self.stats.increment("releases")
-            # 1. Untrack the object from the active objects manager.
-            self.active_manager.untrack_active_object(obj_id)
+        self.stats.increment("releases")
+        # 1. Untrack the object from the active objects manager.
+        self.active_manager.untrack_active_object(obj_id)
 
-            # 2. Validate and reset the object using the operations manager.
-            config = self.get_config_for_key(key)
-            if not self.operations_manager.validate_and_reset_object(obj, key, config):
-                # If validation or reset fails, the object is destroyed
-                # by operations_manager.
-                return
+        # 2. Validate and reset outside the pool lock to reduce lock contention.
+        # The object is no longer tracked as active and is not yet visible in the pool.
+        config = self.get_config_for_key(key)
+        if not self.operations_manager.validate_and_reset_object(obj, key, config):
+            # If validation or reset fails, the object is destroyed by operations_manager.
+            return
+
+        with self.lock:
             # 3. Determine if the object can be added back to the pool
             # (considering global capacity).
             if self.operations_manager.should_add_to_pool(self.pool, self.max_total_objects):
@@ -566,15 +575,34 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                         f"Failed to destroy object during release (filesystem error): {exc}",
                     )
 
-            if self.enable_monitoring:
-                self._update_basic_metrics()
+        if self.enable_monitoring:
+            self._update_basic_metrics()
+
+    def get_total_pooled_objects(self) -> int:
+        """
+        Returns the current number of objects stored in the pool.
+
+        This counter is updated incrementally by pool operations to avoid
+        recalculating `sum(len(queue) for queue in self.pool.values())` on hot paths.
+        """
+        return self._total_pooled_objects
+
+    def _adjust_total_pooled_objects(self, delta: int) -> None:
+        """
+        Adjusts the internal pooled-object counter by `delta`.
+
+        Args:
+            delta (int): Positive when adding pooled objects, negative when removing.
+        """
+        # Defensive clamp to preserve invariant even under exceptional paths.
+        self._total_pooled_objects = max(0, self._total_pooled_objects + delta)
 
     def _update_basic_metrics(self) -> None:
         """
         Updates basic pool metrics such as the number of pooled and active objects.
         These metrics are recorded in the `ThreadSafeStats` instance.
         """
-        total_pooled = sum(len(queue) for queue in self.pool.values())
+        total_pooled = self.get_total_pooled_objects()
         active_count = self.active_manager.get_active_count()
 
         self.stats.set_gauge("total_pooled_objects", total_pooled)

@@ -11,6 +11,7 @@ This file shows how to:
 
 import asyncio
 import atexit
+import logging
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -35,6 +36,8 @@ except ImportError:
 from smartpool import MemoryConfig, MemoryPreset, SmartObjectManager
 
 from .factories import BytesIOFactory, MetadataFactory
+
+LOGGER = logging.getLogger(__name__)
 
 # === Singleton Pattern for the Global Pool ===
 
@@ -142,8 +145,9 @@ if FLASK_AVAILABLE:
                 return jsonify(
                     {"status": "success", "processed_content": result, "buffer_size": buffer_size}
                 )
-            except Exception as e:  # pylint: disable=W0718
-                return jsonify({"error": str(e)}), 500
+            except Exception:  # pylint: disable=W0718
+                LOGGER.exception("Unhandled error in /api/data/process")
+                return jsonify({"error": "Internal server error"}), 500
 
         @app.route("/api/cache/<key>", methods=["GET", "POST", "DELETE"])
         def cache_operations(key):
@@ -185,8 +189,9 @@ if FLASK_AVAILABLE:
                     else:
                         response_data = {"error": "Method not allowed"}
                         status_code = 405
-            except Exception as e:  # pylint: disable=W0718
-                response_data = {"error": str(e)}
+            except Exception:  # pylint: disable=W0718
+                LOGGER.exception("Unhandled error in /api/cache/%s", key)
+                response_data = {"error": "Internal server error"}
                 status_code = 500
 
             return jsonify(response_data), status_code
@@ -221,8 +226,9 @@ if FLASK_AVAILABLE:
             try:
                 report = pool.get_performance_report(detailed=True)
                 return jsonify(report)
-            except Exception as e:  # pylint: disable=W0718
-                return jsonify({"error": str(e)}), 500
+            except Exception:  # pylint: disable=W0718
+                LOGGER.exception("Unhandled error in /admin/pools/%s/metrics", pool_name)
+                return jsonify({"error": "Internal server error"}), 500
 
         return app
 
