@@ -2,14 +2,14 @@ name: Build
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'pyproject.toml'
       - 'requirements*.txt'
       - '.github/workflows/build.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'pyproject.toml'

@@ -2,7 +2,7 @@ name: Code Quality
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'examples/**'
@@ -11,7 +11,7 @@ on:
       - '.pre-commit-config.yaml'
       - '.github/workflows/code_quality.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'examples/**'

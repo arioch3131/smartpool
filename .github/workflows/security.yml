@@ -2,7 +2,7 @@ name: Security Scan
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'examples/**'
@@ -10,7 +10,7 @@ on:
       - 'requirements*.txt'
       - '.github/workflows/security.yml'
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop, chore-release-*, release/* ]
     paths:
       - 'src/**'
       - 'examples/**'
