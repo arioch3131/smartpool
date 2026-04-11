@@ -286,6 +286,10 @@ class MemoryManager:
         }
 
         with self.pool.lock:
+            self.pool._shutdown_metrics_dispatcher(  # pylint: disable=protected-access
+                self.pool.default_config.metrics_flush_timeout_seconds
+            )
+
             # Apply the new configuration to the pool.
             self.pool.default_config = new_config
             self.current_preset = new_preset
@@ -308,6 +312,8 @@ class MemoryManager:
                 safe_log(
                     self.logger, logging.INFO, "Performance metrics enabled due to preset change"
                 )
+
+            self.pool._initialize_metrics_dispatcher()  # pylint: disable=protected-access
 
         # Capture state after applying changes.
         new_state = {

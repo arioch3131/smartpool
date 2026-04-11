@@ -2,7 +2,13 @@
 
 import pytest
 
-from smartpool.config import MemoryConfig, MemoryConfigFactory, MemoryPreset
+from smartpool.config import (
+    MemoryConfig,
+    MemoryConfigFactory,
+    MemoryPreset,
+    MetricsMode,
+    MetricsOverloadPolicy,
+)
 from smartpool.core.exceptions.configuration_error import (
     InvalidPoolSizeError,
     InvalidTTLError,
@@ -20,6 +26,11 @@ class TestMemoryConfig:
         assert config.ttl_seconds > 0
         assert config.cleanup_interval_seconds > 0
         assert config.enable_performance_metrics
+        assert config.metrics_mode == MetricsMode.SYNC
+        assert config.metrics_queue_maxsize > 0
+        assert config.metrics_sample_rate == 1
+        assert config.metrics_flush_timeout_seconds > 0
+        assert config.metrics_overload_policy == MetricsOverloadPolicy.DROP_NEWEST
 
     def test_parameter_validation(self):
         """Test that invalid parameters raise a ValueError."""
@@ -35,6 +46,16 @@ class TestMemoryConfig:
             MemoryConfig(object_creation_cost="invalid_cost")
         with pytest.raises(PoolConfigurationError):
             MemoryConfig(memory_pressure="invalid_pressure")
+        with pytest.raises(PoolConfigurationError):
+            MemoryConfig(metrics_mode="invalid_mode")
+        with pytest.raises(PoolConfigurationError):
+            MemoryConfig(metrics_queue_maxsize=0)
+        with pytest.raises(PoolConfigurationError):
+            MemoryConfig(metrics_sample_rate=0)
+        with pytest.raises(PoolConfigurationError):
+            MemoryConfig(metrics_flush_timeout_seconds=0)
+        with pytest.raises(PoolConfigurationError):
+            MemoryConfig(metrics_overload_policy="invalid_policy")
 
 
 class TestMemoryConfigFactory:
@@ -46,6 +67,11 @@ class TestMemoryConfigFactory:
         for preset in MemoryPreset:
             config = MemoryConfigFactory.create_preset(preset)
             assert isinstance(config, MemoryConfig)
+            assert config.metrics_mode == MetricsMode.SYNC
+            assert config.metrics_queue_maxsize > 0
+            assert config.metrics_sample_rate > 0
+            assert config.metrics_flush_timeout_seconds > 0
+            assert isinstance(config.metrics_overload_policy, MetricsOverloadPolicy)
 
             if preset == MemoryPreset.CUSTOM:
                 assert config.max_objects_per_key == default_config.max_objects_per_key

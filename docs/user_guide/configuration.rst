@@ -24,9 +24,71 @@ The :py:class:`~smartpool.config.MemoryConfig` dataclass encapsulates all config
    .. autoattribute:: enable_acquisition_tracking
    .. autoattribute:: enable_lock_contention_tracking
    .. autoattribute:: max_performance_history_size
+   .. autoattribute:: metrics_mode
+   .. autoattribute:: metrics_queue_maxsize
+   .. autoattribute:: metrics_sample_rate
+   .. autoattribute:: metrics_flush_timeout_seconds
+   .. autoattribute:: metrics_overload_policy
    .. autoattribute:: max_expected_concurrency
    .. autoattribute:: object_creation_cost
    .. autoattribute:: memory_pressure
+
+Metrics Modes (V2)
+------------------
+
+`smartpool` supports multiple metrics execution modes via
+:py:attr:`~smartpool.config.MemoryConfig.metrics_mode`.
+
+Mode overview:
+
+* **off**: set ``enable_performance_metrics=False``. No metrics processing, minimal overhead.
+* **sync**: metrics are updated on the caller thread. Best immediacy, highest hot-path overhead.
+* **async**: metrics events are pushed to a bounded queue and handled by a worker. Eventually consistent.
+* **sampled**: same as ``async`` with event sampling (``metrics_sample_rate``). Best cost/visibility tradeoff.
+
+Related parameters:
+
+* ``metrics_queue_maxsize``: queue capacity for ``async`` and ``sampled``.
+* ``metrics_sample_rate``: keep one event every N events in ``sampled`` mode.
+* ``metrics_flush_timeout_seconds``: best-effort flush budget on shutdown.
+* ``metrics_overload_policy``: behavior when queue is full
+  (``drop_newest``, ``drop_oldest``, ``backpressure``).
+
+Recommended starting points:
+
+* **Production hot paths**: ``sampled`` + sample rate between ``5`` and ``20``.
+* **Diagnostics and validation**: ``sync`` for strict, immediate counters.
+* **High-fidelity async monitoring**: ``async`` + tuned queue size and overload policy.
+
+Example configurations:
+
+.. code-block:: python
+
+   from smartpool.config import MemoryConfig, MetricsMode, MetricsOverloadPolicy
+
+   # 1) Strict/immediate metrics
+   sync_config = MemoryConfig(
+       enable_performance_metrics=True,
+       metrics_mode=MetricsMode.SYNC,
+   )
+
+   # 2) Full async metrics
+   async_config = MemoryConfig(
+       enable_performance_metrics=True,
+       metrics_mode=MetricsMode.ASYNC,
+       metrics_queue_maxsize=20_000,
+       metrics_overload_policy=MetricsOverloadPolicy.DROP_NEWEST,
+   )
+
+   # 3) Sampled async metrics (recommended default for hot paths)
+   sampled_config = MemoryConfig(
+       enable_performance_metrics=True,
+       metrics_mode=MetricsMode.SAMPLED,
+       metrics_sample_rate=10,
+       metrics_queue_maxsize=20_000,
+   )
+
+For benchmark snapshots and tradeoff discussion, see :doc:`../monitoring_cost_model`.
 
 Configuration Presets
 ---------------------

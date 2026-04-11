@@ -12,7 +12,13 @@ from unittest.mock import Mock, patch
 import pytest
 
 import smartpool.core.smartpool_manager as som_module
-from smartpool.config import MemoryConfig, MemoryPreset, PoolConfiguration
+from smartpool.config import (
+    MemoryConfig,
+    MemoryPreset,
+    MetricsMode,
+    MetricsOverloadPolicy,
+    PoolConfiguration,
+)
 from smartpool.core.exceptions.operation_error import (
     ObjectAcquisitionError,
     ObjectCreationFailedError,
@@ -903,6 +909,119 @@ class TestSmartObjectManagerFeatureToggles:
 
         obj_id, key, obj = pool.acquire()
         pool.release(obj_id, key, obj)
+
+        pool.shutdown()
+
+    def test_async_metrics_mode_initializes_dispatcher(self):
+        """Test that async mode initializes dispatcher and emits health gauges."""
+        config = MemoryConfig(metrics_mode=MetricsMode.ASYNC)
+        pool = SmartObjectManager(
+            factory=self.factory,
+            default_config=config,
+            pool_config=PoolConfiguration(register_atexit=False),
+        )
+
+        assert pool.metrics_dispatcher is not None
+
+        obj_id, key, obj = pool.acquire()
+        pool.release(obj_id, key, obj)
+        assert pool.metrics_dispatcher is not None
+        assert pool.metrics_dispatcher.flush(1.0)
+
+        metrics = pool.stats.get_all_metrics()
+        assert "metrics_queue_depth" in metrics["gauges"]
+        assert "metrics_worker_alive" in metrics["gauges"]
+
+        pool.shutdown()
+        assert pool.metrics_dispatcher is None
+
+    def test_async_metrics_drop_counter_is_recorded(self):
+        """Test dropped metrics events are counted in stats counters."""
+        config = MemoryConfig(
+            metrics_mode=MetricsMode.ASYNC,
+            metrics_queue_maxsize=1,
+            metrics_overload_policy=MetricsOverloadPolicy.DROP_NEWEST,
+        )
+        pool = SmartObjectManager(
+            factory=self.factory,
+            default_config=config,
+            pool_config=PoolConfiguration(register_atexit=False),
+        )
+
+        with patch.object(pool, "_process_record_acquisition_event") as mock_handler:
+            mock_handler.side_effect = lambda payload: time.sleep(0.05)
+            # Reinitialize dispatcher so it binds the patched handler.
+            pool._shutdown_metrics_dispatcher(1.0)
+            pool._initialize_metrics_dispatcher()
+
+            for _ in range(100):
+                pool._publish_metrics_event(
+                    pool._EVENT_RECORD_ACQUISITION,  # pylint: disable=protected-access
+                    {
+                        "key": "test_key",
+                        "acquisition_time_ms": 1.0,
+                        "hit": True,
+                        "lock_wait_time_ms": 0.0,
+                    },
+                )
+
+            assert pool.metrics_dispatcher is not None
+            pool.metrics_dispatcher.flush(1.0)
+            assert pool.stats.get("metrics_events_dropped") > 0
+
+        pool.shutdown()
+
+    def test_async_metrics_worker_error_is_non_fatal(self):
+        """Test worker exceptions are absorbed and counted."""
+        config = MemoryConfig(metrics_mode=MetricsMode.ASYNC)
+        pool = SmartObjectManager(
+            factory=self.factory,
+            default_config=config,
+            pool_config=PoolConfiguration(register_atexit=False),
+        )
+
+        with patch.object(pool, "_process_record_acquisition_event") as mock_handler:
+            mock_handler.side_effect = RuntimeError("handler failed")
+            pool._shutdown_metrics_dispatcher(1.0)
+            pool._initialize_metrics_dispatcher()
+            pool._publish_metrics_event(
+                pool._EVENT_RECORD_ACQUISITION,  # pylint: disable=protected-access
+                {
+                    "key": "test_key",
+                    "acquisition_time_ms": 1.0,
+                    "hit": True,
+                    "lock_wait_time_ms": 0.0,
+                },
+            )
+
+            assert pool.metrics_dispatcher is not None
+            assert pool.metrics_dispatcher.flush(1.0)
+            assert pool.stats.get("metrics_worker_errors") >= 1
+
+        # Pool must still be usable after worker handler error.
+        obj_id, key, obj = pool.acquire()
+        pool.release(obj_id, key, obj)
+        pool.shutdown()
+
+    def test_async_adaptive_sampling_is_disabled_when_auto_tuning_enabled(self):
+        """Auto-tuning must keep full acquisition signal quality."""
+        config = MemoryConfig(
+            metrics_mode=MetricsMode.ASYNC,
+            metrics_queue_maxsize=8,
+            metrics_overload_policy=MetricsOverloadPolicy.DROP_NEWEST,
+        )
+        pool = SmartObjectManager(
+            factory=self.factory,
+            default_config=config,
+            pool_config=PoolConfiguration(register_atexit=False),
+        )
+
+        # Enable optimizer loop: adaptive async sampling should be bypassed.
+        pool.enable_auto_tuning(interval_seconds=9999.0)
+        assert pool.metrics_dispatcher is not None
+        with patch.object(pool.metrics_dispatcher, "get_queue_depth_ratio", return_value=1.0):
+            # Even under max queue pressure, events must be retained for optimizer quality.
+            assert all(pool._should_keep_async_record_event() for _ in range(64))
 
         pool.shutdown()
 

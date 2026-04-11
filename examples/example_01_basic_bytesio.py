@@ -135,7 +135,7 @@ def performance_example():
     """Performance measurement example."""
 
     print("\n=== Performance Measurement Example ===\n")
-    size = 10000
+    size = 100000
     factory = BytesIOFactory()
     config = MemoryConfig(
         enable_performance_metrics=True,

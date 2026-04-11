@@ -76,6 +76,37 @@ class TestSmartPoolAutoTuningPerformance:
         yield pool
         pool.shutdown()
 
+    @pytest.fixture
+    def acquire_release_variant_pool(self, base_pool_config, request):
+        """Fixture for acquire/release benchmark variants across tuning/tracking options."""
+        use_auto_tune, enable_acquisition_tracking, enable_lock_contention_tracking = request.param
+
+        variant_config = MemoryConfig.from_dict(
+            {
+                **base_pool_config.__dict__,
+                "enable_acquisition_tracking": enable_acquisition_tracking,
+                "enable_lock_contention_tracking": enable_lock_contention_tracking,
+            }
+        )
+
+        if use_auto_tune:
+            observed_metrics = {
+                "hit_rate": 0.2,
+                "avg_acquisition_time_ms": 15.0,
+                "lock_contention_rate": 0.4,
+            }
+            variant_config = MemoryConfigFactory.auto_tune_config(
+                base_config=variant_config, observed_metrics=observed_metrics
+            )
+
+        pool = SmartObjectManager(
+            factory=BytesIOFactory(),
+            default_config=variant_config,
+            pool_config=PoolConfiguration(register_atexit=False),
+        )
+        yield pool
+        pool.shutdown()
+
     def _run_acquire_release_benchmark(self, pool, benchmark):
         """Helper to benchmark acquire/release operations."""
         # Pre-fill the pool to ensure objects are available for reuse
@@ -92,13 +123,65 @@ class TestSmartPoolAutoTuningPerformance:
 
         benchmark(acquire_release)
 
+    @pytest.mark.benchmark(group="acquire_release_performance")
     def test_acquire_release_performance_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Measure acquire/release performance without auto-tuning."""
         self._run_acquire_release_benchmark(no_auto_tune_pool, benchmark)
 
+    @pytest.mark.benchmark(group="acquire_release_performance")
     def test_acquire_release_performance_with_auto_tune(self, auto_tune_pool, benchmark):
         """Measure acquire/release performance with auto-tuning."""
         self._run_acquire_release_benchmark(auto_tune_pool, benchmark)
+
+    @pytest.mark.benchmark(group="acquire_release_tuning_tracking_matrix")
+    @pytest.mark.parametrize(
+        "acquire_release_variant_pool",
+        [
+            pytest.param(
+                (False, False, False),
+                id="no_auto_tune-acq_tracking_off-lock_tracking_off",
+            ),
+            pytest.param(
+                (False, False, True),
+                id="no_auto_tune-acq_tracking_off-lock_tracking_on",
+            ),
+            pytest.param(
+                (False, True, False),
+                id="no_auto_tune-acq_tracking_on-lock_tracking_off",
+            ),
+            pytest.param(
+                (False, True, True),
+                id="no_auto_tune-acq_tracking_on-lock_tracking_on",
+            ),
+            pytest.param(
+                (True, False, False),
+                id="auto_tune-acq_tracking_off-lock_tracking_off",
+            ),
+            pytest.param(
+                (True, False, True),
+                id="auto_tune-acq_tracking_off-lock_tracking_on",
+            ),
+            pytest.param(
+                (True, True, False),
+                id="auto_tune-acq_tracking_on-lock_tracking_off",
+            ),
+            pytest.param(
+                (True, True, True),
+                id="auto_tune-acq_tracking_on-lock_tracking_on",
+            ),
+        ],
+        indirect=True,
+    )
+    def test_acquire_release_performance_tuning_tracking_matrix(
+        self, acquire_release_variant_pool, benchmark
+    ):
+        """
+        Compare acquire/release performance across:
+        - auto_tune on/off
+        - acquisition tracking on/off
+        - lock contention tracking on/off
+        """
+        self._run_acquire_release_benchmark(acquire_release_variant_pool, benchmark)
 
     def _run_object_creation_benchmark(self, pool, benchmark):
         """Helper to benchmark object creation when pool is exhausted."""
@@ -116,10 +199,12 @@ class TestSmartPoolAutoTuningPerformance:
         for obj_id, key, obj in acquired_objects:
             pool.release(obj_id, key, obj)
 
+    @pytest.mark.benchmark(group="object_creation_performance")
     def test_object_creation_performance_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Measure object creation performance without auto-tuning."""
         self._run_object_creation_benchmark(no_auto_tune_pool, benchmark)
 
+    @pytest.mark.benchmark(group="object_creation_performance")
     def test_object_creation_performance_with_auto_tune(self, auto_tune_pool, benchmark):
         """Measure object creation performance with auto-tuning."""
         self._run_object_creation_benchmark(auto_tune_pool, benchmark)
@@ -163,10 +248,12 @@ class TestSmartPoolAutoTuningPerformance:
 
         benchmark.pedantic(mixed_workload, rounds=3, iterations=1)
 
+    @pytest.mark.benchmark(group="extended_mixed_workload")
     def test_extended_mixed_workload_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Extended mixed workload test without auto-tuning (5 seconds duration)."""
         self._run_extended_mixed_workload_benchmark(no_auto_tune_pool, benchmark, 5.0)
 
+    @pytest.mark.benchmark(group="extended_mixed_workload")
     def test_extended_mixed_workload_with_auto_tune(self, auto_tune_pool, benchmark):
         """Extended mixed workload test with auto-tuning (5 seconds duration)."""
         self._run_extended_mixed_workload_benchmark(auto_tune_pool, benchmark, 5.0)
@@ -208,10 +295,12 @@ class TestSmartPoolAutoTuningPerformance:
 
         benchmark.pedantic(stress_workload, rounds=2, iterations=1)
 
+    @pytest.mark.benchmark(group="long_duration_stress")
     def test_long_duration_stress_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Long duration stress test without auto-tuning (10 seconds)."""
         self._run_long_duration_stress_test(no_auto_tune_pool, benchmark, 10.0)
 
+    @pytest.mark.benchmark(group="long_duration_stress")
     def test_long_duration_stress_with_auto_tune(self, auto_tune_pool, benchmark):
         """Long duration stress test with auto-tuning (10 seconds)."""
         self._run_long_duration_stress_test(auto_tune_pool, benchmark, 10.0)
@@ -248,10 +337,12 @@ class TestSmartPoolAutoTuningPerformance:
 
         benchmark.pedantic(endurance_workload, rounds=1, iterations=1)
 
+    @pytest.mark.benchmark(group="endurance")
     def test_endurance_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Endurance test without auto-tuning (15 seconds)."""
         self._run_endurance_test(no_auto_tune_pool, benchmark, 15.0)
 
+    @pytest.mark.benchmark(group="endurance")
     def test_endurance_with_auto_tune(self, auto_tune_pool, benchmark):
         """Endurance test with auto-tuning (15 seconds)."""
         self._run_endurance_test(auto_tune_pool, benchmark, 15.0)
@@ -291,10 +382,12 @@ class TestSmartPoolAutoTuningPerformance:
 
         benchmark.pedantic(memory_pressure_workload, rounds=2, iterations=1)
 
+    @pytest.mark.benchmark(group="memory_pressure")
     def test_memory_pressure_no_auto_tune(self, no_auto_tune_pool, benchmark):
         """Memory pressure simulation without auto-tuning (8 seconds)."""
         self._run_memory_pressure_simulation(no_auto_tune_pool, benchmark, 8.0)
 
+    @pytest.mark.benchmark(group="memory_pressure")
     def test_memory_pressure_with_auto_tune(self, auto_tune_pool, benchmark):
         """Memory pressure simulation with auto-tuning (8 seconds)."""
         self._run_memory_pressure_simulation(auto_tune_pool, benchmark, 8.0)
