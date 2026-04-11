@@ -85,14 +85,14 @@ python -m build
 
 # The wheel will be created in dist/
 ls dist/
-# smartpool-1.0.0-py3-none-any.whl
-# smartpool-1.0.0.tar.gz
+# smartpool-2.0.0-py3-none-any.whl
+# smartpool-2.0.0.tar.gz
 ```
 
 ### Install the wheel
 
 ```bash
-pip install dist/smartpool-1.0.0-py3-none-any.whl
+pip install dist/smartpool-2.0.0-py3-none-any.whl
 ```
 
 ## Quick Start

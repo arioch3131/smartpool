@@ -53,13 +53,13 @@ If you want to install `smartpool` from a locally built wheel file, follow these
 
        bash scripts/build_wheel.sh
 
-    This will generate a wheel file (e.g., `smartpool-1.0.0-py3-none-any.whl`) in the `dist/` directory.
+    This will generate a wheel file (e.g., `smartpool-2.0.0-py3-none-any.whl`) in the `dist/` directory.
 
 2.  **Install the wheel:**
     Use pip to install the generated wheel file:
 
     .. code-block:: bash
 
-       pip install dist/smartpool-1.0.0-py3-none-any.whl
+       pip install dist/smartpool-2.0.0-py3-none-any.whl
 
-    Replace `smartpool-1.0.0-py3-none-any.whl` with the actual filename of the wheel.
+    Replace `smartpool-2.0.0-py3-none-any.whl` with the actual filename of the wheel.

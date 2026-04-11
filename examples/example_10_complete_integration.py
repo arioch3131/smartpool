@@ -451,7 +451,7 @@ if FASTAPI_AVAILABLE and PIL_AVAILABLE:
             app = FastAPI(
                 title="Image Processing Service",
                 description="Image processing service with optimized memory pools",
-                version="1.0.0",
+                version="2.0.0",
                 lifespan=lifespan,
             )
 

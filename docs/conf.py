@@ -5,7 +5,7 @@
 project = "SmartPool"
 copyright = "2025, Arioch"
 author = "Arioch"
-release = "1.0.0"
+release = "2.0.0"
 
 # -- General configuration ---------------------------------------------------
 
