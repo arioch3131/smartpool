@@ -28,6 +28,8 @@ from .config import (
     MemoryConfigFactory,
     MemoryPreset,
     MemoryPressure,
+    MetricsMode,
+    MetricsOverloadPolicy,
     ObjectCreationCost,
     PoolConfiguration,
 )
@@ -63,6 +65,8 @@ __all__ = [
     "MemoryConfigFactory",
     "MemoryPreset",
     "PoolConfiguration",
+    "MetricsMode",
+    "MetricsOverloadPolicy",
     "ObjectCreationCost",
     "MemoryPressure",
     # Factory interface

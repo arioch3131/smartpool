@@ -151,6 +151,7 @@ The generated HTML is available in `docs/_build/html`.
 ### Key Documentation Sections:
 - **API Reference**: Complete API documentation
 - **Configuration Guide**: Detailed configuration options and presets
+- **Monitoring Cost Model**: Runtime tradeoffs for `sync` / `async` / `sampled` metrics
 - **Factory Development**: How to create custom object factories
 - **Performance Tuning**: Optimization tips and best practices
 - **Architecture Overview**: Internal design and components
@@ -190,6 +191,7 @@ pip install -e ".[database]"    # For database examples
 python -m examples.example_01_basic_bytesio
 python -m examples.example_04_numpy_arrays
 python -m examples.example_05_advanced_features
+python -m examples.example_11_metrics_modes
 
 # Run specialized examples
 python -m examples.example_02_pil_images
@@ -198,6 +200,53 @@ python -m examples.example_06_custom_factory
 python -m examples.example_07_main_web_server --framework fastapi
 python -m examples.example_10_complete_integration
 ```
+
+## Metrics Modes (V2)
+
+SmartPool now supports multiple metrics execution modes to trade consistency vs runtime overhead:
+
+- `off`: metrics disabled (lowest overhead)
+- `sync`: strict, in-thread metrics updates
+- `async`: worker-based metrics aggregation (eventually consistent)
+- `sampled`: async aggregation with sampling
+
+| Mode | Consistency | Runtime Cost | Recommended Use |
+|------|-------------|--------------|-----------------|
+| `off` | None (no metrics) | Lowest | Micro-benchmarks, temporary troubleshooting of pure throughput |
+| `sync` | Immediate | Highest | Debugging, validation runs, strict real-time observability |
+| `async` | Eventual | Medium to high | Full-fidelity metrics with bounded queue/backpressure tradeoffs |
+| `sampled` | Eventual (sampled stream) | Best compromise | Production hot paths and auto-tuning with controlled overhead |
+
+```python
+from smartpool.config import MemoryConfig, MetricsMode
+
+# Recommended default for production hot paths
+config = MemoryConfig(
+    enable_performance_metrics=True,
+    metrics_mode=MetricsMode.SAMPLED,
+    metrics_sample_rate=10,
+    metrics_queue_maxsize=20_000,
+)
+```
+
+Other mode templates:
+
+```python
+# Strict in-thread collection
+sync_cfg = MemoryConfig(enable_performance_metrics=True, metrics_mode=MetricsMode.SYNC)
+
+# Full async collection
+async_cfg = MemoryConfig(
+    enable_performance_metrics=True,
+    metrics_mode=MetricsMode.ASYNC,
+    metrics_queue_maxsize=20_000,
+)
+
+# Disable metrics
+off_cfg = MemoryConfig(enable_performance_metrics=False)
+```
+
+For details and benchmark snapshots, see `docs/monitoring_cost_model.md`.
 
 ### Example Categories
 
@@ -214,6 +263,7 @@ python -m examples.example_10_complete_integration
 |------|-------------|-------------|
 | **example_09_debugging_troubleshooting.py** | `psutil` | Performance tracking, diagnostics and troubleshooting |
 | **example_05_advanced_features.py** | Core only | Auto-optimization, background cleanup, complex scenarios |
+| **example_11_metrics_modes.py** | Core only | Side-by-side comparison of `off/sync/async/sampled` with p95/p99 output |
 
 #### 3. Scientific Computing
 
@@ -251,6 +301,7 @@ python -m examples.example_10_complete_integration
 
 #### Performance Testing & Benchmarking
 - **example_09_debugging_troubleshooting.py**: Debug tools, memory leak detection, performance analysis
+- **example_11_metrics_modes.py**: Quick benchmark-style comparison of metrics modes
 - **Load testing examples**: Realistic scenarios with concurrent operations
 
 #### Custom Development
@@ -285,7 +336,8 @@ pip install "requests>=2.0.0"
 2. **Explore specialized factories**: Try `python -m examples.example_02_pil_images` or `python -m examples.example_04_numpy_arrays`
 3. **Explore custom factories**: Use `python -m examples.example_06_custom_factory` for extension patterns
 4. **Add diagnostics**: Run `python -m examples.example_09_debugging_troubleshooting` for performance insights
-5. **Try your use case**: Choose specialized examples matching your needs
+5. **Compare metrics modes**: Run `python -m examples.example_11_metrics_modes`
+6. **Try your use case**: Choose specialized examples matching your needs
 
 ### Example Features Demonstrated
 

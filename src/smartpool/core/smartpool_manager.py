@@ -18,6 +18,7 @@ from smartpool.config import (
     MemoryConfig,
     MemoryConfigFactory,
     MemoryPreset,
+    MetricsMode,
     PoolConfiguration,
 )
 from smartpool.core.data_models import PooledObject
@@ -38,7 +39,7 @@ from smartpool.core.managers import (
     MemoryOptimizer,
     PoolOperationsManager,
 )
-from smartpool.core.metrics import PerformanceMetrics, ThreadSafeStats
+from smartpool.core.metrics import MetricsDispatcher, PerformanceMetrics, ThreadSafeStats
 from smartpool.core.utils import safe_log
 
 T = TypeVar("T")
@@ -118,6 +119,9 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         T: The type of objects that this memory pool will manage.
     """
 
+    _EVENT_RECORD_ACQUISITION = "record_acquisition"
+    _EVENT_UPDATE_BASIC_METRICS = "update_basic_metrics"
+
     def __init__(
         self,
         factory: ObjectFactory[T],
@@ -150,7 +154,14 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         self.max_total_objects = pool_config.max_total_objects
         self.enable_monitoring = pool_config.enable_monitoring
         self.performance_metrics: Union[PerformanceMetrics, None] = None
+        self.metrics_dispatcher: Optional[MetricsDispatcher] = None
         self._is_shut_down: bool = False
+        self._sample_counter: int = 0
+        self._async_adaptive_sample_counter: int = 0
+        self._metrics_state_lock = threading.RLock()
+        self._basic_metrics_update_pending = False
+        self._last_basic_metrics_event_ts = 0.0
+        self._basic_metrics_min_interval_seconds = 0.05
 
         # Configuration with preset
         self._initialize_config(default_config, preset)
@@ -257,6 +268,188 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         else:
             self.performance_metrics = None
 
+        self._initialize_metrics_dispatcher()
+
+    def _initialize_metrics_dispatcher(self) -> None:
+        """
+        Initializes the async metrics dispatcher when configured.
+        """
+        mode = self.default_config.metrics_mode
+        should_use_dispatcher = mode in (MetricsMode.ASYNC, MetricsMode.SAMPLED) and (
+            self.enable_monitoring or self.performance_metrics is not None
+        )
+
+        if not should_use_dispatcher:
+            self.metrics_dispatcher = None
+            return
+
+        handlers = {
+            self._EVENT_RECORD_ACQUISITION: self._process_record_acquisition_event,
+            self._EVENT_UPDATE_BASIC_METRICS: self._process_update_basic_metrics_event,
+        }
+
+        self.metrics_dispatcher = MetricsDispatcher(
+            maxsize=self.default_config.metrics_queue_maxsize,
+            overload_policy=self.default_config.metrics_overload_policy,
+            handlers=handlers,
+            on_drop=self._on_metrics_event_drop,
+            on_worker_error=self._on_metrics_worker_error,
+        )
+        self.metrics_dispatcher.start()
+
+    def _shutdown_metrics_dispatcher(self, timeout_seconds: float) -> None:
+        """Stops the metrics dispatcher and flushes queued events best-effort."""
+        if self.metrics_dispatcher is None:
+            return
+        self.metrics_dispatcher.shutdown(timeout_seconds)
+        self.metrics_dispatcher = None
+
+    def _on_metrics_event_drop(self, _: str) -> None:
+        """Records dropped metrics events in pool counters."""
+        self.stats.increment("metrics_events_dropped")
+
+    def _on_metrics_worker_error(self, exc: Exception) -> None:
+        """Records worker handler failures without interrupting pool operations."""
+        self.stats.increment("metrics_worker_errors")
+        safe_log(self.logger, logging.WARNING, f"Metrics worker handler error: {exc}")
+
+    def _publish_metrics_event(
+        self, event_type: str, payload: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Publishes a metrics event if dispatcher is active, otherwise executes sync.
+        """
+        if self.metrics_dispatcher is None:
+            self._process_metrics_event_sync(event_type, payload or {})
+            return
+
+        if (
+            self.default_config.metrics_mode == MetricsMode.SAMPLED
+            and not self._should_sample_event()
+        ):
+            return
+
+        if event_type == self._EVENT_UPDATE_BASIC_METRICS:
+            with self._metrics_state_lock:
+                now = time.monotonic()
+                if (
+                    now - self._last_basic_metrics_event_ts
+                    < self._basic_metrics_min_interval_seconds
+                ):
+                    return
+                if self._basic_metrics_update_pending:
+                    return
+                self._basic_metrics_update_pending = True
+                self._last_basic_metrics_event_ts = now
+
+        if (
+            event_type == self._EVENT_RECORD_ACQUISITION
+            and self.default_config.metrics_mode == MetricsMode.ASYNC
+            and not self._should_keep_async_record_event()
+        ):
+            return
+
+        published = self.metrics_dispatcher.publish(event_type, payload or {})
+        if not published and event_type == self._EVENT_UPDATE_BASIC_METRICS:
+            with self._metrics_state_lock:
+                self._basic_metrics_update_pending = False
+
+    def _process_metrics_event_sync(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if event_type == self._EVENT_RECORD_ACQUISITION:
+            self._process_record_acquisition_event(payload)
+        elif event_type == self._EVENT_UPDATE_BASIC_METRICS:
+            self._process_update_basic_metrics_event(payload)
+
+    def _should_sample_event(self) -> bool:
+        """
+        Determines whether an event should be kept in sampled mode.
+        """
+        sample_rate = self.default_config.metrics_sample_rate
+        if sample_rate <= 1:
+            return True
+        self._sample_counter += 1
+        return self._sample_counter % sample_rate == 0
+
+    def _should_keep_async_record_event(self) -> bool:
+        """
+        Adaptive sampling for async mode under queue pressure.
+        Keeps full fidelity at low pressure and samples more aggressively as queue fills.
+        """
+        if self._is_auto_tuning_enabled():
+            # Preserve signal quality for optimizer decisions.
+            return True
+
+        dispatcher = self.metrics_dispatcher
+        if dispatcher is None:
+            return True
+
+        queue_ratio = dispatcher.get_queue_depth_ratio()
+        base_rate = max(1, self.default_config.metrics_sample_rate)
+        if queue_ratio >= 0.75:
+            effective_rate = max(base_rate, 16)
+        elif queue_ratio >= 0.5:
+            effective_rate = max(base_rate, 8)
+        elif queue_ratio >= 0.25:
+            effective_rate = max(base_rate, 4)
+        else:
+            effective_rate = base_rate
+
+        self._async_adaptive_sample_counter += 1
+        return self._async_adaptive_sample_counter % effective_rate == 0
+
+    def _is_auto_tuning_enabled(self) -> bool:
+        """Returns True when optimizer exists and auto-tuning loop is enabled."""
+        optimizer = self.optimizer
+        return bool(optimizer is not None and getattr(optimizer, "_auto_tune_enabled", False))
+
+    def _process_record_acquisition_event(self, payload: Dict[str, Any]) -> None:
+        """Processes a queued performance acquisition event."""
+        performance_metrics = self.performance_metrics
+        if performance_metrics is None:
+            return
+        performance_metrics.record_acquisition(
+            key=cast(str, payload["key"]),
+            acquisition_time_ms=cast(float, payload["acquisition_time_ms"]),
+            hit=cast(bool, payload["hit"]),
+            lock_wait_time_ms=cast(float, payload.get("lock_wait_time_ms", 0.0)),
+        )
+
+    def _process_update_basic_metrics_event(self, _: Dict[str, Any]) -> None:
+        """Processes a queued basic-metrics refresh event."""
+        try:
+            self._update_basic_metrics()
+        finally:
+            with self._metrics_state_lock:
+                self._basic_metrics_update_pending = False
+
+    def _should_emit_record_acquisition_event(self) -> bool:
+        """
+        Decides whether to emit a record-acquisition event.
+        This is used on hot paths to avoid unnecessary payload construction.
+        """
+        if self._is_auto_tuning_enabled():
+            return True
+
+        mode = self.default_config.metrics_mode
+        if mode == MetricsMode.SAMPLED:
+            return self._should_sample_event()
+        if mode == MetricsMode.ASYNC:
+            return self._should_keep_async_record_event()
+        return True
+
+    def _emit_record_acquisition_event(self, payload: Dict[str, Any]) -> None:
+        """
+        Emits a record-acquisition event without re-running generic sampling logic.
+        """
+        dispatcher = self.metrics_dispatcher
+        if dispatcher is None:
+            self._process_record_acquisition_event(payload)
+            return
+
+        published = dispatcher.publish(self._EVENT_RECORD_ACQUISITION, payload)
+        if not published:
+            self._on_metrics_event_drop(self._EVENT_RECORD_ACQUISITION)
+
     def _initialize_background_services(self, register_atexit: bool) -> None:
         """
         Initializes background services, such as the background cleanup manager,
@@ -347,12 +540,18 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
             )
 
         performance_metrics = self.performance_metrics
+        metrics_mode = self.default_config.metrics_mode
         optimizer = self.optimizer
         needs_post_tasks = bool(performance_metrics or self.enable_monitoring or optimizer)
         start_perf = time.perf_counter() if needs_post_tasks else 0.0
+        sync_inflight_metrics: Optional[PerformanceMetrics] = (
+            performance_metrics
+            if (performance_metrics is not None and metrics_mode == MetricsMode.SYNC)
+            else None
+        )
 
-        if performance_metrics:
-            performance_metrics.mark_acquisition_start()
+        if sync_inflight_metrics is not None:
+            sync_inflight_metrics.mark_acquisition_start()
 
         try:
             with self.lock:
@@ -405,8 +604,8 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                     )
                 return obj_id, key, obj.obj
         finally:
-            if performance_metrics:
-                performance_metrics.mark_acquisition_end()
+            if sync_inflight_metrics is not None:
+                sync_inflight_metrics.mark_acquisition_end()
 
     def _handle_pool_hit(
         self,
@@ -506,18 +705,20 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                 (newly created).
         """
         # Performance metrics recording.
-        if self.performance_metrics:
+        if self.performance_metrics and self._should_emit_record_acquisition_event():
             total_time = (time.perf_counter() - start_perf) * 1000
-            self.performance_metrics.record_acquisition(
-                key=key,
-                acquisition_time_ms=total_time,
-                hit=hit,
-                lock_wait_time_ms=lock_wait_time_ms,
+            self._emit_record_acquisition_event(
+                {
+                    "key": key,
+                    "acquisition_time_ms": total_time,
+                    "hit": hit,
+                    "lock_wait_time_ms": lock_wait_time_ms,
+                }
             )
 
         # General monitoring updates.
         if self.enable_monitoring:
-            self._update_basic_metrics()
+            self._publish_metrics_event(self._EVENT_UPDATE_BASIC_METRICS)
 
         # Periodic auto-tuning check.
         if self.optimizer:
@@ -603,7 +804,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
                     )
 
         if self.enable_monitoring:
-            self._update_basic_metrics()
+            self._publish_metrics_event(self._EVENT_UPDATE_BASIC_METRICS)
 
     def get_total_pooled_objects(self) -> int:
         """
@@ -634,6 +835,10 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
 
         self.stats.set_gauge("total_pooled_objects", total_pooled)
         self.stats.set_gauge("active_objects_count", active_count)
+        if self.metrics_dispatcher is not None:
+            health = self.metrics_dispatcher.get_health_metrics()
+            self.stats.set_gauge("metrics_queue_depth", health["queue_depth"])
+            self.stats.set_gauge("metrics_worker_alive", health["worker_alive"])
         self.stats.record_metrics()
 
     # === PUBLIC INTERFACE (Delegation to managers) ===
@@ -830,6 +1035,7 @@ class SmartObjectManager(Generic[T]):  # pylint: disable=too-many-instance-attri
         """
         # Stop all managers and their associated threads/executors.
         self.background_manager.shutdown(wait=True)
+        self._shutdown_metrics_dispatcher(self.default_config.metrics_flush_timeout_seconds)
 
         # Clear all pooled and active objects.
         self.clear()

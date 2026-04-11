@@ -58,6 +58,38 @@ class MemoryPressure(Enum):
     HIGH = "high"
 
 
+class MetricsMode(Enum):
+    """
+    Defines how performance metrics are collected.
+
+    Attributes:
+        SYNC: Metrics are recorded on the caller thread (strict consistency,
+              higher overhead on acquire/release).
+        ASYNC: Metrics events are published and processed in background
+               (eventual consistency, lower hot-path overhead).
+        SAMPLED: Same as ASYNC with event sampling to reduce overhead further.
+    """
+
+    SYNC = "sync"
+    ASYNC = "async"
+    SAMPLED = "sampled"
+
+
+class MetricsOverloadPolicy(Enum):
+    """
+    Defines behavior when the async metrics queue is full.
+
+    Attributes:
+        DROP_OLDEST: Drop the oldest queued event to enqueue the new one.
+        DROP_NEWEST: Drop the incoming event and keep queued events untouched.
+        BACKPRESSURE: Block producer briefly to apply backpressure to callers.
+    """
+
+    DROP_OLDEST = "drop_oldest"
+    DROP_NEWEST = "drop_newest"
+    BACKPRESSURE = "backpressure"
+
+
 class MemoryPreset(Enum):
     """
     Defines predefined configuration presets for the memory pool.
@@ -124,6 +156,13 @@ class MemoryConfig:  # pylint: disable=too-many-instance-attributes
         enable_lock_contention_tracking (bool): If True, tracks time spent waiting for pool locks
                                       to identify contention issues.
         max_performance_history_size (int): The number of historical performance records to keep.
+        metrics_mode (MetricsMode): Metrics collection strategy for the hot path:
+                                    sync, async, or sampled.
+        metrics_queue_maxsize (int): Maximum number of pending metrics events in async/sampled mode.
+        metrics_sample_rate (int): Sampling ratio for sampled mode
+                                   (1 = keep all, 10 = keep one out of ten events).
+        metrics_flush_timeout_seconds (float): Max time allowed for best-effort flush on shutdown.
+        metrics_overload_policy (MetricsOverloadPolicy): Policy to apply when the queue is full.
 
         # Configuration for different usage patterns (hints for auto-tuning)
         max_expected_concurrency (int): An estimate of the maximum number of concurrent threads
@@ -151,6 +190,11 @@ class MemoryConfig:  # pylint: disable=too-many-instance-attributes
     enable_acquisition_tracking: bool = True
     enable_lock_contention_tracking: bool = True
     max_performance_history_size: int = 1000
+    metrics_mode: MetricsMode = MetricsMode.SYNC
+    metrics_queue_maxsize: int = 10_000
+    metrics_sample_rate: int = 1
+    metrics_flush_timeout_seconds: float = 1.0
+    metrics_overload_policy: MetricsOverloadPolicy = MetricsOverloadPolicy.DROP_NEWEST
 
     # Configuration for different usage patterns
     max_expected_concurrency: int = 10  # Expected number of threads
@@ -191,6 +235,30 @@ class MemoryConfig:  # pylint: disable=too-many-instance-attributes
                 "memory_pressure must be a MemoryPressure enum value,"
                 f" got {type(self.memory_pressure)}"
             )
+        if not isinstance(self.metrics_mode, MetricsMode):
+            raise PoolConfigurationError(
+                f"metrics_mode must be a MetricsMode enum value, got {type(self.metrics_mode)}"
+            )
+        if self.metrics_queue_maxsize <= 0:
+            raise PoolConfigurationError(
+                "metrics_queue_maxsize must be positive",
+                context={"metrics_queue_maxsize": self.metrics_queue_maxsize},
+            )
+        if self.metrics_sample_rate <= 0:
+            raise PoolConfigurationError(
+                "metrics_sample_rate must be positive",
+                context={"metrics_sample_rate": self.metrics_sample_rate},
+            )
+        if self.metrics_flush_timeout_seconds <= 0:
+            raise PoolConfigurationError(
+                "metrics_flush_timeout_seconds must be positive",
+                context={"metrics_flush_timeout_seconds": self.metrics_flush_timeout_seconds},
+            )
+        if not isinstance(self.metrics_overload_policy, MetricsOverloadPolicy):
+            raise PoolConfigurationError(
+                "metrics_overload_policy must be a MetricsOverloadPolicy enum value,"
+                f" got {type(self.metrics_overload_policy)}"
+            )
 
     @classmethod
     def from_dict(cls, config_params: Dict[str, object]) -> "MemoryConfig":
@@ -222,6 +290,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": True,
             "enable_lock_contention_tracking": True,
             "max_performance_history_size": 2000,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 20_000,
+            "metrics_sample_rate": 1,
+            "metrics_flush_timeout_seconds": 2.0,
+            "metrics_overload_policy": MetricsOverloadPolicy.DROP_OLDEST,
         },
         MemoryPreset.LOW_MEMORY: {
             "max_objects_per_key": 5,
@@ -238,6 +311,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": False,
             "enable_lock_contention_tracking": False,
             "max_performance_history_size": 100,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 1_000,
+            "metrics_sample_rate": 1,
+            "metrics_flush_timeout_seconds": 0.5,
+            "metrics_overload_policy": MetricsOverloadPolicy.DROP_NEWEST,
         },
         MemoryPreset.IMAGE_PROCESSING: {
             "max_objects_per_key": 30,
@@ -254,6 +332,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": True,
             "enable_lock_contention_tracking": True,
             "max_performance_history_size": 500,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 10_000,
+            "metrics_sample_rate": 1,
+            "metrics_flush_timeout_seconds": 1.5,
+            "metrics_overload_policy": MetricsOverloadPolicy.DROP_NEWEST,
         },
         MemoryPreset.DATABASE_CONNECTIONS: {
             "max_objects_per_key": 20,
@@ -270,6 +353,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": True,
             "enable_lock_contention_tracking": True,
             "max_performance_history_size": 1000,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 5_000,
+            "metrics_sample_rate": 1,
+            "metrics_flush_timeout_seconds": 2.0,
+            "metrics_overload_policy": MetricsOverloadPolicy.BACKPRESSURE,
         },
         MemoryPreset.BATCH_PROCESSING: {
             "max_objects_per_key": 50,
@@ -286,6 +374,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": False,
             "enable_lock_contention_tracking": False,
             "max_performance_history_size": 200,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 8_000,
+            "metrics_sample_rate": 2,
+            "metrics_flush_timeout_seconds": 2.5,
+            "metrics_overload_policy": MetricsOverloadPolicy.DROP_OLDEST,
         },
         MemoryPreset.DEVELOPMENT: {
             "max_objects_per_key": 10,
@@ -302,6 +395,11 @@ class MemoryConfigFactory:
             "enable_acquisition_tracking": True,
             "enable_lock_contention_tracking": True,
             "max_performance_history_size": 100,
+            "metrics_mode": MetricsMode.SYNC,
+            "metrics_queue_maxsize": 2_000,
+            "metrics_sample_rate": 1,
+            "metrics_flush_timeout_seconds": 1.0,
+            "metrics_overload_policy": MetricsOverloadPolicy.BACKPRESSURE,
         },
     }
 
@@ -385,6 +483,11 @@ class MemoryConfigFactory:
             enable_acquisition_tracking=base_config.enable_acquisition_tracking,
             enable_lock_contention_tracking=base_config.enable_lock_contention_tracking,
             max_performance_history_size=base_config.max_performance_history_size,
+            metrics_mode=base_config.metrics_mode,
+            metrics_queue_maxsize=base_config.metrics_queue_maxsize,
+            metrics_sample_rate=base_config.metrics_sample_rate,
+            metrics_flush_timeout_seconds=base_config.metrics_flush_timeout_seconds,
+            metrics_overload_policy=base_config.metrics_overload_policy,
         )
 
         # Adjustments based on metrics

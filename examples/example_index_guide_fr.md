@@ -99,6 +99,7 @@ report = pool.get_performance_report(detailed=True)
 |---------|-------------|--------|---------------|
 | `example_09_debugging_troubleshooting.py` | Outils et techniques pour le débogage et le diagnostic. | Avancé | Diagnostic de performance, détection de fuites mémoire, analyse de contention. |
 | `example_10_complete_integration.py` | Projet complet d'application de traitement d'images. | Expert | Architecture réelle, combinaison de tous les concepts, API REST complète, gestion de jobs. |
+| `example_11_metrics_modes.py` | Compare les modes de métriques `off/sync/async/sampled` sur la même charge. | Intermédiaire | Surcharge d'exécution, comparaison p95/p99, visibilité des événements rejetés. |
 
 ## Choix de la factory appropriée
 

@@ -307,11 +307,8 @@ def run_mixed_load_test(duration_seconds: int):  # noqa: PLR0915
             time.sleep(0.05)
 
     print("--- Mixed Load Test Finished ---")
-    print(
-        f"Total requests: {
-            result.successful_requests + result.failed_requests + result.http_404_count
-        }"
-    )
+    total_requests = result.successful_requests + result.failed_requests + result.http_404_count
+    print(f"Total requests: {total_requests}")
     print(f"Successful requests: {result.successful_requests}")
     print(f"Failed requests (system errors): {result.failed_requests}")
     print(f"HTTP 404 responses: {result.http_404_count}")
